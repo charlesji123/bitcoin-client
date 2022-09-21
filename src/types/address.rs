@@ -1,4 +1,6 @@
 use serde::{Serialize, Deserialize};
+use ring::digest;
+use std::convert::TryInto;
 
 // 20-byte address
 #[derive(Eq, PartialEq, Serialize, Deserialize, Clone, Hash, Default, Copy)]
@@ -48,7 +50,11 @@ impl std::fmt::Debug for Address {
 
 impl Address {
     pub fn from_public_key_bytes(bytes: &[u8]) -> Address {
-        unimplemented!()
+        let actual = digest::digest(&digest::SHA256,bytes);
+        let act = actual.as_ref(); // convert to u8
+        let act2 : &[u8] = &act[12..32];
+        let act1:[u8; 20] = act2.try_into().expect("Bitcoin");
+        Address(act1)
     }
 }
 // DO NOT CHANGE THIS COMMENT, IT IS FOR AUTOGRADER. BEFORE TEST
@@ -70,3 +76,5 @@ mod test {
 }
 
 // DO NOT CHANGE THIS COMMENT, IT IS FOR AUTOGRADER. AFTER TEST
+
+
