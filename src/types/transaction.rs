@@ -1,28 +1,63 @@
-use serde::{Serialize,Deserialize};
-use ring::signature::{Ed25519KeyPair, Signature, KeyPair, VerificationAlgorithm, EdDSAParameters};
-use rand::Rng;
+use serde::{Serialize,Deserialize}; // declare serde as (serialize, deserialize)
+use ring::signature::{Ed25519KeyPair, Signature, self};
+use rand::Rng; // bind rand to Rng
+use rand::RngCore;
+use crate::types::address::Address; // import Address struct
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct Transaction {
+    sender: Address,
+    receiver: Address,
+    value: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct SignedTransaction {
+    t: Transaction,
+    signature_vector: Vec<u8>,
+    public_key: Vec<u8>,
 }
 
 /// Create digital signature of a transaction
+
 pub fn sign(t: &Transaction, key: &Ed25519KeyPair) -> Signature {
-    unimplemented!()
+    // searlized transaction 256 bytes
+    let transac = bincode::serialize(t).unwrap(); // unwrap gives a vector
+    let trans: &[u8]= transac.as_slice(); // convert to u8
+    // Sign the transaction
+    key.sign(&trans) // sign the message
 }
 
 /// Verify digital signature of a transaction, using public key instead of secret key
 pub fn verify(t: &Transaction, public_key: &[u8], signature: &[u8]) -> bool {
-    unimplemented!()
+    let transac = bincode::serialize(t).unwrap();
+    let trans = transac.as_slice();
+    let peer_public_key =
+        ring::signature::UnparsedPublicKey::new(&signature::ED25519, public_key);
+    peer_public_key.verify(trans, signature).is_ok() // verify the mesage
 }
 
 #[cfg(any(test, test_utilities))]
 pub fn generate_random_transaction() -> Transaction {
-    unimplemented!()
+    let mut rng = rand::thread_rng();
+
+    let mut sender:Vec<u8>= Vec::with_capacity(20);
+    rng.fill_bytes(& mut sender); // generates a 20 bit address
+    let sender_add = Address::from_public_key_bytes(sender.as_slice());
+
+    let mut receiver:Vec<u8>= Vec::with_capacity(20);
+    rng.fill_bytes(&mut receiver); // generates a 20 bit address
+    let receiver_add = Address::from_public_key_bytes(receiver.as_slice());
+    
+    let int = rng.gen();
+
+    // generate a random transaction
+    let transaction1 = Transaction {
+        sender: sender_add,
+        receiver: receiver_add,
+        value: int
+    };
+    transaction1
 }
 
 // DO NOT CHANGE THIS COMMENT, IT IS FOR AUTOGRADER. BEFORE TEST
@@ -54,3 +89,4 @@ mod tests {
 }
 
 // DO NOT CHANGE THIS COMMENT, IT IS FOR AUTOGRADER. AFTER TEST
+
