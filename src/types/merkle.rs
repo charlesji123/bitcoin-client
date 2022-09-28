@@ -1,29 +1,102 @@
+use crate::miner::Context;
 use super::hash::{Hashable, H256};
+use ring::digest;
 
 /// A Merkle tree.
 #[derive(Debug, Default)]
 pub struct MerkleTree {
+    merkle: Vec<Vec<H256>>,
 }
 
 impl MerkleTree {
     pub fn new<T>(data: &[T]) -> Self where T: Hashable, {
-        unimplemented!()
-    }
+        // &[T] suggests a vector of hashable data type
+        let mut merkletree: Vec<Vec<H256>> = Vec::new();
 
+        // initialize the base layer
+        let mut base_layer: Vec<H256> = Vec::new();
+        for n in 0..data.len(){
+            base_layer.push(data[n].hash()); }
+        let last_item = base_layer[base_layer.len() - 1];
+        if base_layer.len() %2 == 1 {base_layer.push(last_item)}
+        merkletree.push(base_layer); // debugging: forgot to push base layer
+
+        let mut layer = 0;
+        while merkletree[layer].len() > 1 {
+            // collect the accurate hash functions to this layer
+            let mut parent_layer: Vec<H256> = Vec::new();
+            let mut prev_layer = merkletree[layer].clone();
+            
+            // duplicate the last item if the layer has an odd number of hashes
+            if prev_layer.len() % 2 == 1 {prev_layer.push(prev_layer[prev_layer.len() - 1])}
+
+            for i in 0..prev_layer.len(){
+                // hash data pair-wise
+                if i % 2 == 0 {
+                    let mut ctx = digest::Context::new(&digest::SHA256);
+                    ctx.update(prev_layer[i].as_ref());
+                    ctx.update(prev_layer[i+1].as_ref());
+                    let new_hash = ctx.finish();
+                    parent_layer.push(new_hash.into());
+                }
+            }
+
+            // append this layer to the merkle tree vector
+            merkletree.push(parent_layer); 
+            layer = layer + 1;
+        }
+        MerkleTree{merkle: merkletree}
+    }
+    
     pub fn root(&self) -> H256 {
-        unimplemented!()
+        self.merkle[self.merkle.len()-1][0]
     }
 
     /// Returns the Merkle Proof of data at index i
     pub fn proof(&self, index: usize) -> Vec<H256> {
-        unimplemented!()
+        // leaf sibiling 
+        let mut new_index = index;
+        let mut prooftree: Vec<H256> = Vec::new();
+        for n in 0..self.merkle.len()-1{
+            if new_index % 2 == 0 {prooftree.push(self.merkle[n][new_index+1])
+            }
+            else {prooftree.push(self.merkle[n][index-1])
+            }
+            new_index = new_index / 2;
+        }
+        prooftree
     }
 }
 
 /// Verify that the datum hash with a vector of proofs will produce the Merkle root. Also need the
 /// index of datum and `leaf_size`, the total number of leaves.
 pub fn verify(root: &H256, datum: &H256, proof: &[H256], index: usize, leaf_size: usize) -> bool {
-    unimplemented!()
+    if index >= leaf_size {
+        return false;
+    }
+
+    let mut proof_sibiling = *datum;
+    let mut _num = index;
+
+    for n in 0..proof.len() {
+        let mut ctx = digest::Context::new(&digest::SHA256);
+
+        if _num %2 == 1 {
+            ctx.update(proof[n].as_ref());
+            ctx.update(proof_sibiling.as_ref());
+        }
+        else {
+            ctx.update(proof_sibiling.as_ref());
+            ctx.update(proof[n].as_ref());
+        }
+        let new_hash = ctx.finish();
+
+        proof_sibiling = new_hash.into();
+
+        _num = _num / 2;
+    }
+    return *root == proof_sibiling;
+    
 }
 // DO NOT CHANGE THIS COMMENT, IT IS FOR AUTOGRADER. BEFORE TEST
 
@@ -76,6 +149,7 @@ mod tests {
         let input_data: Vec<H256> = gen_merkle_tree_data!();
         let merkle_tree = MerkleTree::new(&input_data);
         let proof = merkle_tree.proof(0);
+        print!("{}", merkle_tree.merkle.len());
         assert!(verify(&merkle_tree.root(), &input_data[0].hash(), &proof, 0, input_data.len()));
     }
 }
