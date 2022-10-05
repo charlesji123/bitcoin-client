@@ -13,6 +13,15 @@ impl MerkleTree {
         // &[T] suggests a vector of hashable data type
         let mut merkletree: Vec<Vec<H256>> = Vec::new();
 
+        if data.len() == 0 {
+            return Self { merkle: merkletree };
+        }
+        // if the data is one, return a merkle tree with that data
+        if data.len() == 1 {
+            merkletree.push(vec![data[0].hash()]);
+            return MerkleTree { merkle: merkletree };
+        }
+
         // initialize the base layer
         let mut base_layer: Vec<H256> = Vec::new();
         for n in 0..data.len(){
@@ -49,6 +58,9 @@ impl MerkleTree {
     }
     
     pub fn root(&self) -> H256 {
+        if self.merkle.len() == 0 {
+            return H256::default();
+        }
         self.merkle[self.merkle.len()-1][0]
     }
 
