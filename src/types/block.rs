@@ -16,7 +16,7 @@ pub struct Header {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Content {
-    transactions: Vec<SignedTransaction>,
+    pub transactions: Vec<SignedTransaction>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -66,11 +66,12 @@ pub fn generate_random_block(parent: &H256) -> Block {
     let data: [H256; 0] = [];
     let merkle_tree = MerkleTree::new(&data);
     let merkle_root = merkle_tree.root();
+    let difficulty = [255u8; 32].into(); // set maximum difficulty
   
     let header = Header {
         parent: *parent,
         nonce: rng.gen(),
-        difficulty: *parent,
+        difficulty,
         timestamp: rng.gen(),
         merkle_root,
         length: 0,

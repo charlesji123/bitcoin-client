@@ -3,7 +3,7 @@ use crate::types::hash::{H256, Hashable};
 use std::collections::HashMap;
 
 pub struct Blockchain {
-    hash_map: HashMap<H256, Block>,
+    pub hash_map: HashMap<H256, Block>,
     tip: H256,
 }
 

@@ -7,7 +7,14 @@ use std::time;
 
 use std::thread;
 
-use crate::types::block::Block;
+use crate::types::block::{Block, Header, Content};
+use crate::blockchain::Blockchain;
+use crate::types::hash::Hashable;
+use crate::types::transaction::SignedTransaction;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use crate::types::merkle::MerkleTree;
+use rand::Rng;
 
 enum ControlSignal {
     Start(u64), // the number controls the lambda of interval between block generation
@@ -23,6 +30,7 @@ enum OperatingState {
 
 pub struct Context {
     /// Channel for receiving control signal
+    arc_mutex: Arc<Mutex<Blockchain>>, 
     control_chan: Receiver<ControlSignal>,
     operating_state: OperatingState,
     finished_block_chan: Sender<Block>,
@@ -34,11 +42,12 @@ pub struct Handle {
     control_chan: Sender<ControlSignal>,
 }
 
-pub fn new() -> (Context, Handle, Receiver<Block>) {
+pub fn new(blockchain: &Arc<Mutex<Blockchain>>) -> (Context, Handle, Receiver<Block>) {
     let (signal_chan_sender, signal_chan_receiver) = unbounded();
     let (finished_block_sender, finished_block_receiver) = unbounded();
 
     let ctx = Context {
+        arc_mutex: Arc::clone(blockchain),
         control_chan: signal_chan_receiver,
         operating_state: OperatingState::Paused,
         finished_block_chan: finished_block_sender,
@@ -53,7 +62,8 @@ pub fn new() -> (Context, Handle, Receiver<Block>) {
 
 #[cfg(any(test,test_utilities))]
 fn test_new() -> (Context, Handle, Receiver<Block>) {
-    new()
+    let new_blockchain= &Arc::new(Mutex::new(Blockchain::new()));
+    new(new_blockchain)
 }
 
 impl Handle {
@@ -86,6 +96,8 @@ impl Context {
     fn miner_loop(&mut self) {
         // main mining loop
         loop {
+            // update the parent
+            let parent = self.arc_mutex.lock().unwrap().tip().clone();
             // check and react to control signals
             match self.operating_state {
                 OperatingState::Paused => {
@@ -131,9 +143,38 @@ impl Context {
             if let OperatingState::ShutDown = self.operating_state {
                 return;
             }
+            
+            let blockchain = &mut self.arc_mutex.lock().unwrap();
 
-            // TODO for student: actual mining, create a block
-            // TODO for student: if block mining finished, you can have something like: self.finished_block_chan.send(block.clone()).expect("Send finished block error");
+            // initialize timestap, difficulty, content, merkle root, and nonce
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+            let difficulty = blockchain.hash_map.get(&parent).unwrap().header.difficulty;
+            let new_content: [SignedTransaction; 0] = [];
+            let merkle_tree = MerkleTree::new(&new_content); 
+            let merkle_root = merkle_tree.root();
+
+            let mut rng = rand::thread_rng();
+            let nonce: u32 = rng.gen();
+
+            let header = Header {
+                parent,
+                nonce,
+                difficulty,
+                timestamp,
+                merkle_root,
+                length: 0,
+            };
+
+            let content = Content {
+                transactions: new_content.to_vec(),
+            };
+
+            let block = Block {header, content};
+            
+            if block.hash() <= difficulty {
+                self.finished_block_chan.send(block.clone()).expect("Send finished block error");
+                blockchain.insert(&block); // insert the block into blockchain
+            }
 
             if let OperatingState::Run(i) = self.operating_state {
                 if i != 0 {
