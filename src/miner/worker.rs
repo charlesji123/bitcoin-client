@@ -42,12 +42,14 @@ impl Worker {
     fn worker_loop(&self) {
         loop {
             let _block = self.finished_block_chan.recv().expect("Receive finished block error");
-            // TODO for student: insert this finished block to blockchain, and broadcast this block hash
+            // insert the block into the blockchain
             let mut blockchain = self.arc_mutex.lock().unwrap();
             blockchain.insert(&_block);
-            // let _block_hash = _block.hash();
-            // let block_vector = vec![_block_hash];
-            // self.server.broadcast(NewBlockHashes(block_vector));
+
+            // broadcast the block hash after insert the block
+            let _block_hash = _block.hash();
+            let block_vector = vec![_block_hash];
+            self.server.broadcast(NewBlockHashes(block_vector));
         }
     }
 }
