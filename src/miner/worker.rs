@@ -3,7 +3,6 @@ use log::{debug, info};
 use crate::network::message::Message::NewBlockHashes;
 use crate::types::block::Block;
 use crate::network::server::Handle as ServerHandle;
-use crate::miner::Context;
 use crate::blockchain::Blockchain;
 use crate::types::hash::Hashable;
 use std::thread;

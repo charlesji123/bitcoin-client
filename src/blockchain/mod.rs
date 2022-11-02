@@ -1,6 +1,7 @@
-use crate::types::block::{Block,generate_random_block};
+use crate::types::block::{Block,generate_random_block, generate_genesis_block};
 use crate::types::hash::{H256, Hashable};
 use std::collections::HashMap;
+use std::thread::current;
 
 pub struct Blockchain {
     pub hash_map: HashMap<H256, Block>,
@@ -12,7 +13,7 @@ impl Blockchain {
     pub fn new() -> Self {
         let parent: [u8; 32] = [0; 32];
         let parent_hash = H256::from(parent);
-        let genesis_block: Block = generate_random_block(&parent_hash);
+        let genesis_block: Block = generate_genesis_block(&parent_hash);
         let genesis_hash = genesis_block.hash();
         let mut hash_map: HashMap <H256, Block> = HashMap::new();
         hash_map.insert(genesis_hash, genesis_block);
@@ -24,9 +25,12 @@ impl Blockchain {
         let hash = block.hash();
         let mut new_block = block.clone(); 
         new_block.header.length = self.hash_map.get(&new_block.get_parent()).unwrap().header.length + 1;
+        print!("{}", new_block.header.length);
+        print!("{}", self.tip);
         if new_block.header.length > self.hash_map.get(&self.tip).unwrap().header.length {
             self.tip = hash;
         }
+        print!("{}", self.tip);
         self.hash_map.insert(hash, new_block);
     }
 
@@ -40,7 +44,8 @@ impl Blockchain {
         let mut blocks = Vec::new();
         let mut current_hash = self.tip;
         let mut current_length = self.hash_map.get(&self.tip).unwrap().header.length;
-        while current_length != 0 {
+        print!("{}", current_length);
+        while current_length > 0 {
             blocks.push(current_hash);
             current_hash = self.hash_map.get(&current_hash).unwrap().get_parent(); // update the hash
             current_length = self.hash_map.get(&current_hash).unwrap().header.length; // update the length
@@ -49,8 +54,8 @@ impl Blockchain {
 
         let mut reversed_blocks: Vec<H256> = Vec::new();
 
-        for n in (blocks.len() - 1)..=0 {
-            reversed_blocks.push(blocks[n]);
+        for n in 0..blocks.len() {
+            reversed_blocks.push(blocks[blocks.len() - n - 1]);
         }
         reversed_blocks
     }

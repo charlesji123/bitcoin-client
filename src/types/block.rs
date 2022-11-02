@@ -80,3 +80,25 @@ pub fn generate_random_block(parent: &H256) -> Block {
     let content = Content {transactions: Vec::new()};
     Block {header, content}
 }
+
+pub fn generate_genesis_block(parent: &H256) -> Block {
+    // generate the genesis block determinstically
+    let data: [H256; 0] = [];
+    let merkle_tree = MerkleTree::new(&data);
+    let merkle_root = merkle_tree.root();
+    let difficulty = [255u8;32].into(); // set maximum difficulty
+    let timestamp: u128 = 0;
+    let nonce: u32 = 0;
+  
+    let header = Header {
+        parent: *parent,
+        nonce,
+        difficulty,
+        timestamp,
+        merkle_root,
+        length: 0,
+    };
+    
+    let content = Content {transactions: Vec::new()};
+    Block {header, content}
+}

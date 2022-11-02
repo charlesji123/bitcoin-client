@@ -111,6 +111,7 @@ impl Server {
                         }
                         "/blockchain/longest-chain" => {
                             let blockchain = blockchain.lock().unwrap();
+                            print!("{}", blockchain.tip().to_string());
                             let v = blockchain.all_blocks_in_longest_chain();
                             let v_string: Vec<String> = v.into_iter().map(|h|h.to_string()).collect();
                             respond_json!(req, v_string);
