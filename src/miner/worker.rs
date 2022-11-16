@@ -1,9 +1,9 @@
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use log::{debug, info};
-use crate::network::message::Message::NewBlockHashes;
+use crate::network::message::Message::{NewBlockHashes, self};
 use crate::types::block::Block;
 use crate::network::server::Handle as ServerHandle;
-use crate::blockchain::Blockchain;
+use crate::blockchain::{Blockchain, Mempool};
 use crate::types::hash::Hashable;
 use std::thread;
 use std::sync::{Arc, Mutex};
@@ -12,19 +12,22 @@ use std::sync::{Arc, Mutex};
 pub struct Worker {
     server: ServerHandle,
     finished_block_chan: Receiver<Block>,
-    arc_mutex: Arc<Mutex<Blockchain>>, 
+    blockchain: Arc<Mutex<Blockchain>>,
+    mempool: Arc<Mutex<Mempool>>, 
 }
 
 impl Worker {
     pub fn new(
         server: &ServerHandle,
         finished_block_chan: Receiver<Block>,
-        arc_mutex: &Arc<Mutex<Blockchain>>,
+        blockchain: &Arc<Mutex<Blockchain>>,
+        mempool: &Arc<Mutex<Mempool>>,
     ) -> Self {
         Self {
             server: server.clone(),
             finished_block_chan,
-            arc_mutex: arc_mutex.clone(),
+            blockchain: blockchain.clone(),
+            mempool: mempool.clone(),
         }
     }
 
@@ -42,8 +45,7 @@ impl Worker {
         loop {
             let _block = self.finished_block_chan.recv().expect("Receive finished block error");
             // insert the block into the blockchain
-            let mut blockchain = self.arc_mutex.lock().unwrap();
-            blockchain.insert(&_block);
+            self.blockchain.lock().unwrap().insert(&_block);
 
             // broadcast the block hash after insert the block
             let _block_hash = _block.hash();
@@ -51,4 +53,5 @@ impl Worker {
             self.server.broadcast(NewBlockHashes(block_vector));
         }
     }
+
 }

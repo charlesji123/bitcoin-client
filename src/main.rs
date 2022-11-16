@@ -7,8 +7,9 @@ pub mod blockchain;
 pub mod types;
 pub mod miner;
 pub mod network;
+pub mod txgen;
 
-use blockchain::Blockchain;
+use blockchain::{Blockchain, Mempool};
 use clap::clap_app;
 use smol::channel;
 use log::{error, info};
@@ -37,7 +38,9 @@ fn main() {
     let verbosity = matches.occurrences_of("verbose") as usize;
     stderrlog::new().verbosity(verbosity).init().unwrap();
     let blockchain = Blockchain::new();
+    let mempool = Mempool::new();
     let blockchain = Arc::new(Mutex::new(blockchain));
+    let mempool = Arc::new(Mutex::new(mempool));
     // parse p2p server address
     let p2p_addr = matches
         .value_of("peer_addr")
@@ -78,13 +81,20 @@ fn main() {
         p2p_workers,
         msg_rx,
         &server,
-        &blockchain
+        &blockchain,
+        &mempool
     );
     worker_ctx.start();
 
+    // start the transaction generator
+    let (tx_ctx, tx, finished_tx_chan) = txgen::new(&blockchain, &mempool);
+    let tx_worker_ctx = txgen::worker::Worker::new(&server, finished_tx_chan, &blockchain, &mempool);
+    tx_ctx.start();
+    tx_worker_ctx.start();
+
     // start the miner
-    let (miner_ctx, miner, finished_block_chan) = miner::new(&blockchain);
-    let miner_worker_ctx = Worker::new(&server, finished_block_chan, &blockchain);
+    let (miner_ctx, miner, finished_block_chan) = miner::new(&blockchain, &mempool);
+    let miner_worker_ctx = Worker::new(&server, finished_block_chan, &blockchain, &mempool);
     miner_ctx.start();
     miner_worker_ctx.start();
 
@@ -128,6 +138,7 @@ fn main() {
         &miner,
         &server,
         &blockchain,
+        &tx,
     );
 
     loop {

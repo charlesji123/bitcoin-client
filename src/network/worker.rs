@@ -1,12 +1,16 @@
 use super::message::Message;
 use super::peer;
 use super::server::Handle as ServerHandle;
+use crate::types::address::Address;
 use crate::types::block::Block;
 use crate::types::hash::{H256, Hashable};
-use crate::blockchain::Blockchain;
+use crate::blockchain::{Blockchain, Mempool};
+use crate::types::transaction::{Transaction, SignedTransaction, sign};
 use std::collections::HashMap;
-use std::thread;
+use std::io::{self, Write};
+use std::thread::{self, current};
 use std::sync::{Arc, Mutex};
+use ring::signature::{Ed25519KeyPair, Signature, self};
 
 use log::{debug, warn, error};
 
@@ -19,12 +23,12 @@ pub struct Worker {
     msg_chan: smol::channel::Receiver<(Vec<u8>, peer::Handle)>,
     num_worker: usize,
     server: ServerHandle,
-    arc_mutex: Arc<Mutex<Blockchain>>, 
+    wrapped_blockchain: Arc<Mutex<Blockchain>>, 
+    wrapped_mempool: Arc<Mutex<Mempool>>,
 }
 
 #[derive(Clone)]
 pub struct OrphanBuffer {
-    // orphan_buffer: Vec<Block>,
     pub hash_map: HashMap<H256, Block>,
 }
 
@@ -33,13 +37,15 @@ impl Worker {
         num_worker: usize,
         msg_src: smol::channel::Receiver<(Vec<u8>, peer::Handle)>,
         server: &ServerHandle,
-        arc_mutex: &Arc<Mutex<Blockchain>>, 
+        wrapped_blockchain: &Arc<Mutex<Blockchain>>, 
+        wrapped_mempool: &Arc<Mutex<Mempool>>, 
     ) -> Self {
         Self {
             msg_chan: msg_src,
             num_worker,
             server: server.clone(),
-            arc_mutex: arc_mutex.clone()
+            wrapped_blockchain: wrapped_blockchain.clone(),
+            wrapped_mempool: wrapped_mempool.clone()
         }
     }
 
@@ -58,7 +64,7 @@ impl Worker {
         let mut orphanbuffer = OrphanBuffer {
             hash_map: HashMap::new(),
         };
-
+        
         loop {
             let result = smol::block_on(self.msg_chan.recv());
             if let Err(e) = result {
@@ -80,9 +86,8 @@ impl Worker {
                 Message::NewBlockHashes(hashvec) => {
                     let mut new_hashes = Vec::<H256>::new();
                     for hash in hashvec {
-                        if !&self.arc_mutex.lock().unwrap().hash_map.contains_key(&hash) {
+                        if !&self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&hash) {
                             new_hashes.push(hash);
-                            print!("{}", hash);
                         }
                     }
                     peer.write(Message::GetBlocks(new_hashes));
@@ -91,8 +96,8 @@ impl Worker {
                     let mut blocks = Vec::new();
                     
                     for hash in hashvec {
-                        if self.arc_mutex.lock().unwrap().hash_map.contains_key(&hash){ 
-                            let blockchain_local = self.arc_mutex.lock().unwrap();
+                        if self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&hash){ 
+                            let blockchain_local = self.wrapped_blockchain.lock().unwrap();
                             let block_response = blockchain_local.hash_map.get(&hash);
                             let block_option = Option::expect(block_response, "block not found");
                             blocks.push(block_option.clone());
@@ -101,53 +106,151 @@ impl Worker {
 
                     peer.write(Message::Blocks(blocks));
                 }
+
                 Message::Blocks(blockvec) => {
                     let mut new_hashes = Vec::<H256>::new();
                     let mut parent_vec = Vec::new();
-                    // Project 6 // 
+                    // For all blocks in the message
                     for block in blockvec {
-                    // PoW Check
-                    assert!(block.hash() <= block.get_difficulty(), "PoW validity check failed");
-
-                    if !self.arc_mutex.lock().unwrap().hash_map.contains_key(&block.hash()) {
-
-                        let blockchain_local = self.arc_mutex.lock().unwrap();
-                        // Parent Check
-                        if blockchain_local.hash_map.contains_key(&block.get_parent()) {
-                            self.arc_mutex.lock().unwrap().insert(&block); // if the parent exists, add the block to your blockchain
-                            new_hashes.push(block.hash());
+                    // Check if the block passed POW difficulty check
+                        let pow_passed = block.hash() <= self.wrapped_blockchain.lock().unwrap().tip();
+                        print!(" this is block hash: {} ", block.hash());
+                        print!(" block difficulty: {} ", self.wrapped_blockchain.lock().unwrap().tip());
+                        print!(" whether pow check is passed {} ", pow_passed);
+                    
+                        // Check if transactions in a block are valid
+                        let block_clone = block.clone(); 
+                        let signed_transactions = block_clone.content.transactions;
+                        let mut transaction_is_valid = true;
+                        for signed_transaction in signed_transactions {
+                        // by first checking if transaction signature is valid
+                            if !verify(&signed_transaction.t, &signed_transaction.signature_vector, &signed_transaction.signer_public_key) {
+                                transaction_is_valid = false;
+                            }
+                            if Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice()) != signed_transaction.t.receiver {
+                                transaction_is_valid = false;
+                            }
                         }
 
-                        assert!(block.get_parent().hash() == block.get_difficulty(), "Difficulty not consistent");
+                        // If the blockchain does not already contain the block
+                        if !self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash()) && pow_passed && transaction_is_valid {
+                            print!("{}", !self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash()) && pow_passed && transaction_is_valid);
+                            let current_blockchain = self.wrapped_blockchain.lock().unwrap();
+                            // But contains the block's parent, add the block to the blockchain and remove the block's transactions from the mempool
+                            if current_blockchain.hash_map.contains_key(&block.get_parent()) {
+                                self.wrapped_blockchain.lock().unwrap().insert(&block);
+                                new_hashes.push(block.hash()); 
+                                // remove the block's transactions from the mempool after the block is added to the blockchain
+                                let transactions = block.clone().content.transactions;
+                                for signed_transaction in transactions {
+                                    if self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&signed_transaction.hash()) {
+                                        self.wrapped_mempool.lock().unwrap().hash_map.remove(&signed_transaction.hash());
+                                    }
+                                }
+                            }
+                            // after we check the block's parent, now we check if the block header is consistent
+                            // if block.get_parent().hash() != block.get_difficulty() {
+                            //     break;
+                            // }
 
-                        // if the new block is the parent of any block in the buffer
-                        let mut parent_hash = block.hash();
-                        while orphanbuffer.hash_map.contains_key(&parent_hash) {
+                            // if the new block is the parent of any block in the buffer
+                            let mut parent_hash = block.hash();
+                            while orphanbuffer.hash_map.contains_key(&parent_hash) {
                                 let removed_hash = parent_hash; // the hash to be removed from the buffer
                                 let selected_block = orphanbuffer.hash_map.get(&parent_hash);
                                 let selected_block_option = Option::expect(selected_block, "block not found");
-                                self.arc_mutex.lock().unwrap().insert(&selected_block_option.clone()); // add the block to your blockchain
+                                self.wrapped_blockchain.lock().unwrap().insert(&selected_block_option.clone()); // add the block to your blockchain
                                 new_hashes.push(selected_block_option.clone().hash());
 
                                 parent_hash = selected_block_option.clone().hash(); // update the hash for next round
                                 orphanbuffer.hash_map.remove(&removed_hash); // remove the block from the buffer
                             }
                         }
+                        // if the blockchain already contains the block, add the repeated block to the orphan buffer
+                        else {
+                            let parent_hash = block.get_parent();
+                            orphanbuffer.hash_map.insert(block.get_parent(), block); // if the parent does not exist, add the block to the buffer
+                            parent_vec.push(parent_hash);
+                        }
+                    }
+                    if parent_vec.len() > 0 {
+                        peer.write(Message::GetBlocks(parent_vec));
+                        print!("new parent vector is sent");
+                    }
                     else {
-                        let parent_hash = block.get_parent();
-                        orphanbuffer.hash_map.insert(block.get_parent(), block); // if the parent does not exist, add the block to the buffer
-                        parent_vec.push(parent_hash);
+                        print!(" there is no parent vector to get blocks ");
                     }
+                    if new_hashes.len() > 0 {
+                        peer.write(Message::NewBlockHashes(new_hashes));
+                        print!("new block hashes are sent");
                     }
-                    peer.write(Message::GetBlocks(parent_vec));
-                    self.server.broadcast(Message::NewBlockHashes(new_hashes));  // broadcast the new hashes
+                    else {
+                        print!("there is no new block hashes to send");
+                    }
                 }
-                Message::NewTransactionHashes(_) => todo!(),
-                Message::GetTransactions(_) => todo!(),
-                Message::Transactions(_) => todo!(),
+                
+                Message::NewTransactionHashes(trans_hashes) => {
+                    let mut get_hashes = Vec::<H256>::new();
+                    // for all the transaction hashes in the message
+                    for hash in trans_hashes {
+                        // if the transaction is not in the mempool, add it to the mempool
+                        if !&self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&hash) {
+                            get_hashes.push(hash);
+                        }
+                    }
+                    // broadcast the new transaction hashes that are newly added to the mempool
+                    peer.write(Message::GetTransactions(get_hashes));
+                }
+                Message::GetTransactions(trans_vec) => {
+                    let mut transactions = Vec::new();
+                    
+                    for hash in trans_vec {
+                        if self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&hash){ 
+                            let mempool = self.wrapped_mempool.lock().unwrap();
+                            let transaction = mempool.hash_map.get(&hash);
+                            let transaction_option = Option::expect(transaction, "block not found");
+                            transactions.push(transaction_option.clone());
+                        } 
+                    }
+
+                    peer.write(Message::Transactions(transactions));
+                }
+                Message::Transactions(signed_transactions) => {
+                    println!("received transactions!");
+                    let mut new_hashes = Vec::<H256>::new();
+                    let mut signature_is_valid = true;
+                    // retrive the trasnactions of the hashes from the mempool, and check their validity
+                    for signed_transaction in signed_transactions {
+                        // first, check transaction signature validity
+                        if !verify(&signed_transaction.t, &signed_transaction.signature_vector, &signed_transaction.signer_public_key) {
+                            signature_is_valid = false;
+                        }
+                        if Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice()) != signed_transaction.t.receiver {
+                            signature_is_valid = false;
+                        }
+                        // double spending check: todo()
+
+                        // if the transaction is not in the mempool, add it to the mempool
+                        if !self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&signed_transaction.hash()) && signature_is_valid {
+                            new_hashes.push(signed_transaction.hash());
+                            self.wrapped_mempool.lock().unwrap().hash_map.insert(signed_transaction.hash(), signed_transaction);
+                            println!("transaction inserted into the mempool!");
+                        }
+                    }
+                    self.server.broadcast(Message::NewTransactionHashes(new_hashes));  
+                }
             }
         }
     }
+}
+
+// reimplement the verify function here
+pub fn verify(t: &Transaction, public_key: &[u8], signature: &[u8]) -> bool {
+    let transac = bincode::serialize(t).unwrap();
+    let trans = transac.as_slice();
+    let peer_public_key =
+        ring::signature::UnparsedPublicKey::new(&signature::ED25519, public_key);
+    peer_public_key.verify(trans, signature).is_ok() // verify the mesage
 }
 
 #[cfg(any(test,test_utilities))]
@@ -175,7 +278,8 @@ fn generate_test_worker_and_start() -> (TestMsgSender, ServerTestReceiver, Vec<H
     let (server, server_receiver) = ServerHandle::new_for_test();
     let (test_msg_sender, msg_chan) = TestMsgSender::new();
     let new_blockchain= &Arc::new(Mutex::new(Blockchain::new()));
-    let worker = Worker::new(1, msg_chan, &server, new_blockchain);
+    let new_mempool = &Arc::new(Mutex::new(Mempool::new()));
+    let worker = Worker::new(1, msg_chan, &server, new_blockchain, new_mempool);
     worker.start(); 
     // generate and append the hash of the genesis block
     let blockchain_vector = new_blockchain.lock().unwrap().all_blocks_in_longest_chain();
@@ -224,9 +328,11 @@ mod test {
     #[timeout(60000)]
     fn reply_blocks() {
         let (test_msg_sender, server_receiver, v) = generate_test_worker_and_start();
+        print!("this is v: {} ", v.last().unwrap());
         let random_block = generate_random_block(v.last().unwrap());
         let mut _peer_receiver = test_msg_sender.send(Message::Blocks(vec![random_block.clone()]));
         let reply = server_receiver.recv().unwrap();
+        print!(" this is hash random block generted by v: {} ", random_block.hash());
         if let Message::NewBlockHashes(v) = reply {
             assert_eq!(v, vec![random_block.hash()]);
         } else {

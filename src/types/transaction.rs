@@ -1,25 +1,23 @@
 use serde::{Serialize,Deserialize}; // declare serde as (serialize, deserialize)
 use ring::signature::{Ed25519KeyPair, Signature, self};
-use rand::Rng; // bind rand to Rng
-use rand::RngCore;
-use crate::types::address::Address; // import Address struct
+use rand::{Rng, RngCore}; // bind rand to Rng
+use crate::types::address::Address;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct Transaction {
-    sender: Address,
-    receiver: Address,
-    value: usize,
+    pub receiver: Address,
+    pub value: usize,
+    pub account_nonce: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct SignedTransaction {
-    t: Transaction,
-    signature_vector: Vec<u8>,
-    public_key: Vec<u8>,
+    pub t: Transaction,
+    pub signature_vector: Vec<u8>,
+    pub signer_public_key: Vec<u8>,
 }
 
 /// Create digital signature of a transaction
-
 pub fn sign(t: &Transaction, key: &Ed25519KeyPair) -> Signature {
     // searlized transaction 256 bytes
     let transac = bincode::serialize(t).unwrap(); // unwrap gives a vector
@@ -37,27 +35,20 @@ pub fn verify(t: &Transaction, public_key: &[u8], signature: &[u8]) -> bool {
     peer_public_key.verify(trans, signature).is_ok() // verify the mesage
 }
 
-#[cfg(any(test, test_utilities))]
+// #[cfg(any(test, test_utilities))]
 pub fn generate_random_transaction() -> Transaction {
-    let mut rng = rand::thread_rng();
 
-    let mut sender:Vec<u8>= Vec::with_capacity(20);
-    rng.fill_bytes(& mut sender); // generates a 20 bit address
-    let sender_add = Address::from_public_key_bytes(sender.as_slice());
+    let mut rng = rand::thread_rng();
 
     let mut receiver:Vec<u8>= Vec::with_capacity(20);
     rng.fill_bytes(&mut receiver); // generates a 20 bit address
     let receiver_add = Address::from_public_key_bytes(receiver.as_slice());
-    
-    let int = rng.gen();
 
-    // generate a random transaction
-    let transaction1 = Transaction {
-        sender: sender_add,
+    Transaction {
         receiver: receiver_add,
-        value: int
-    };
-    transaction1
+        value: rng.gen(),
+        account_nonce: rng.gen(),
+    }
 }
 
 // DO NOT CHANGE THIS COMMENT, IT IS FOR AUTOGRADER. BEFORE TEST

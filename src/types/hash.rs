@@ -3,6 +3,8 @@ use std::convert::TryInto;
 #[cfg(any(test, test_utilities))]
 use rand::Rng;
 
+use super::transaction::SignedTransaction;
+
 /// An object that can be meaningfully hashed.
 pub trait Hashable {
     /// Hash the object using SHA256.

@@ -1,11 +1,18 @@
 use crate::types::block::{Block,generate_random_block, generate_genesis_block};
 use crate::types::hash::{H256, Hashable};
+use crate::types::transaction::SignedTransaction;
 use std::collections::HashMap;
 use std::thread::current;
 
 pub struct Blockchain {
     pub hash_map: HashMap<H256, Block>,
     tip: H256,
+}
+
+
+#[derive(Clone)]
+pub struct Mempool {
+    pub hash_map: HashMap<H256, SignedTransaction>,
 }
 
 impl Blockchain {
@@ -25,12 +32,9 @@ impl Blockchain {
         let hash = block.hash();
         let mut new_block = block.clone(); 
         new_block.header.length = self.hash_map.get(&new_block.get_parent()).unwrap().header.length + 1;
-        print!("{}", new_block.header.length);
-        print!("{}", self.tip);
         if new_block.header.length > self.hash_map.get(&self.tip).unwrap().header.length {
             self.tip = hash;
         }
-        print!("{}", self.tip);
         self.hash_map.insert(hash, new_block);
     }
 
@@ -59,7 +63,41 @@ impl Blockchain {
         }
         reversed_blocks
     }
+
+    /// Get all blocks' hashes of the longest chain, ordered from genesis to the tip
+    pub fn all_tx_in_longest_chain(&self) -> Vec<Vec<H256>> {
+        let longest_chain = self.all_blocks_in_longest_chain();
+
+        let mut all_txs = Vec::new();
+        for n in 0..longest_chain.len() {
+            let mut this_block_tx = Vec::new();
+            let block = self.hash_map.get(&longest_chain[n]).unwrap();
+            for m in 0..block.content.transactions.len() {
+                this_block_tx.push(block.content.transactions[m].hash());
+            }
+            all_txs.push(this_block_tx);
+        }
+        return all_txs;
+    }
 }
+
+impl Mempool {
+    /// Create a new mempool
+    pub fn new() -> Self {
+        let hash_map: HashMap <H256, SignedTransaction> = HashMap::new();
+        Mempool { hash_map }
+    }
+
+    /// Get all transactions in the mempool
+    pub fn all_transactions(&self) -> Vec<SignedTransaction> {
+        let mut transactions = Vec::new();
+        for (_, transaction) in self.hash_map.iter() {
+            transactions.push(transaction.clone());
+        }
+        transactions
+    }
+}
+
 
 // DO NOT CHANGE THIS COMMENT, IT IS FOR AUTOGRADER. BEFORE TEST
 

@@ -1,8 +1,11 @@
+use std::collections::btree_set::Difference;
+
 use serde::{Serialize, Deserialize};
 use crate::types::hash::{H256, Hashable};
 use crate::types::transaction::SignedTransaction;
 use rand::{thread_rng, Rng};
 use crate::types::merkle::MerkleTree;
+use hex_literal::hex;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Header {
@@ -25,13 +28,6 @@ pub struct Block {
     pub content: Content,
 }
 
-impl Hashable for SignedTransaction {
-    fn hash(&self) -> H256 {
-        let transac = bincode::serialize(self).unwrap();
-        let transac_bytes = transac.as_slice();
-        ring::digest::digest(&ring::digest::SHA256, &transac_bytes).into()
-    }
-}
 
 impl Hashable for Header {
     fn hash(&self) -> H256 {
@@ -44,6 +40,14 @@ impl Hashable for Header {
 impl Hashable for Block {
     fn hash(&self) -> H256 {
         self.header.hash()
+    }
+}
+
+impl Hashable for SignedTransaction {
+    fn hash(&self) -> H256 {
+        let transac = bincode::serialize(self).unwrap();
+        let transac_bytes = transac.as_slice();
+        ring::digest::digest(&ring::digest::SHA256, &transac_bytes).into()
     }
 }
 
@@ -66,8 +70,8 @@ pub fn generate_random_block(parent: &H256) -> Block {
     let data: [H256; 0] = [];
     let merkle_tree = MerkleTree::new(&data);
     let merkle_root = merkle_tree.root();
-    let difficulty = [255u8; 32].into(); // set maximum difficulty
-  
+    let difficulty = hex!("00000effffffffffffffffffffffffffffffffffffffffffffffffffffffffff").into(); // set maximum difficulty
+
     let header = Header {
         parent: *parent,
         nonce: rng.gen(),
@@ -86,7 +90,7 @@ pub fn generate_genesis_block(parent: &H256) -> Block {
     let data: [H256; 0] = [];
     let merkle_tree = MerkleTree::new(&data);
     let merkle_root = merkle_tree.root();
-    let difficulty = [255u8;32].into(); // set maximum difficulty
+    let difficulty = hex!("000effffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").into(); // set maximum difficulty
     let timestamp: u128 = 0;
     let nonce: u32 = 0;
   

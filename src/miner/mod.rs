@@ -3,18 +3,23 @@ pub mod worker;
 use log::info;
 
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
+use std::convert::TryInto;
 use std::time;
 
 use std::thread;
 
+use crate::network;
+use crate::network::message::Message;
 use crate::types::block::{Block, Header, Content};
-use crate::blockchain::Blockchain;
+use crate::blockchain::{Blockchain, Mempool};
 use crate::types::hash::Hashable;
 use crate::types::transaction::SignedTransaction;
+use crate::types::transaction::Transaction;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::types::merkle::MerkleTree;
 use rand::Rng;
+use crate::network::server::Handle as ServerHandle;
 
 enum ControlSignal {
     Start(u64), // the number controls the lambda of interval between block generation
@@ -34,6 +39,7 @@ pub struct Context {
     control_chan: Receiver<ControlSignal>,
     operating_state: OperatingState,
     finished_block_chan: Sender<Block>,
+    mempool: Arc<Mutex<Mempool>>,
 }
 
 #[derive(Clone)]
@@ -42,7 +48,7 @@ pub struct Handle {
     control_chan: Sender<ControlSignal>,
 }
 
-pub fn new(blockchain: &Arc<Mutex<Blockchain>>) -> (Context, Handle, Receiver<Block>) {
+pub fn new(blockchain: &Arc<Mutex<Blockchain>>, mempool: &Arc<Mutex<Mempool>>) -> (Context, Handle, Receiver<Block>) {
     let (signal_chan_sender, signal_chan_receiver) = unbounded();
     let (finished_block_sender, finished_block_receiver) = unbounded();
 
@@ -51,19 +57,21 @@ pub fn new(blockchain: &Arc<Mutex<Blockchain>>) -> (Context, Handle, Receiver<Bl
         control_chan: signal_chan_receiver,
         operating_state: OperatingState::Paused,
         finished_block_chan: finished_block_sender,
+        mempool: Arc::clone(mempool),
     };
 
     let handle = Handle {
         control_chan: signal_chan_sender,
     };
 
-    (ctx, handle, finished_block_receiver)
+    (ctx, handle, finished_block_receiver) // this handle can be used either for miner or transaction
 }
 
 #[cfg(any(test,test_utilities))]
 fn test_new() -> (Context, Handle, Receiver<Block>) {
     let new_blockchain= &Arc::new(Mutex::new(Blockchain::new()));
-    new(new_blockchain)
+    let new_mempool = &Arc::new(Mutex::new(Mempool::new()));
+    new(new_blockchain, new_mempool)
 }
 
 impl Handle {
@@ -143,14 +151,36 @@ impl Context {
             if let OperatingState::ShutDown = self.operating_state {
                 return;
             }
-            
-            let blockchain = &mut self.arc_mutex.lock().unwrap();
 
-            // initialize timestap, difficulty, content, merkle root, and nonce
+            // let blockchain = &mut self.arc_mutex.lock().unwrap();
+            // tip = {
+            //     block = 
+            //     block.tip()
+            // }
+            let mut this_block_transactions= Vec::new();
+            // if the block is consistent with the difficulty of the blockchain, insert the block into the blockchain
+            // update the block's transactions based on the mempool before inserting into the blockchain
+            if self.mempool.lock().unwrap().hash_map.len() > 32 {
+                let mut count = 0;
+                for (hash, transaction) in self.mempool.lock().unwrap().hash_map.clone() {
+                    this_block_transactions.push(transaction);
+                    count += 1;
+                    if count >= 32 {
+                        break;
+                    }
+                }                    
+            }
+            else if self.mempool.lock().unwrap().hash_map.len() != 0 {
+                for (hash, transaction) in self.mempool.lock().unwrap().hash_map.clone() {
+                    this_block_transactions.push(transaction);
+                }
+            }
+
+            // After initializing the transactions, initialize timestap, difficulty, content, merkle root, and nonce
             let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-            let difficulty = blockchain.hash_map.get(&parent).unwrap().header.difficulty;
-            let new_content: [SignedTransaction; 0] = [];
-            let merkle_tree = MerkleTree::new(&new_content); 
+            let difficulty = self.arc_mutex.lock().unwrap().hash_map.get(&parent).unwrap().header.difficulty;
+
+            let merkle_tree = MerkleTree::new(&this_block_transactions);
             let merkle_root = merkle_tree.root();
 
             let mut rng = rand::thread_rng();
@@ -166,14 +196,19 @@ impl Context {
             };
 
             let content = Content {
-                transactions: new_content.to_vec(),
+                transactions: this_block_transactions.to_vec(),
             };
-
-            let block = Block {header, content};
             
+            let block = Block {header, content};
+
             if block.hash() <= difficulty {
+                print!(" block hash is {} ", block.hash());
+                // only remove the transactions from the mempool after the block is passed through
+                for transactions in block.content.transactions.clone() {
+                    self.mempool.lock().unwrap().hash_map.remove(&transactions.hash());
+                }
+                self.arc_mutex.lock().unwrap().insert(&block); 
                 self.finished_block_chan.send(block.clone()).expect("Send finished block error");
-                blockchain.insert(&block); // insert the block into blockchain
             }
 
             if let OperatingState::Run(i) = self.operating_state {
