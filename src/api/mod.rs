@@ -157,6 +157,45 @@ impl Server {
                             }
                             respond_json!(req, all_txs);
                         }
+                        "/blockchain/state" => {
+                            let params = url.query_pairs();
+                            let params: HashMap<_, _> = params.into_owned().collect();
+                            let lambda = match params.get("block") {
+                                Some(v) => v,
+                                None => {
+                                    respond_result!(req, false, "missing block number");
+                                    return;
+                                }
+                            };
+                            let lambda = match lambda.parse::<u64>() {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    respond_result!(
+                                        req,
+                                        false,
+                                        format!("error parsing lambda: {}", e)
+                                    );
+                                    return;
+                                }
+                            };
+                            let unwrapped_blockchain = blockchain.lock().unwrap();
+                            let mut index = 0;
+                            let mut block_hash = unwrapped_blockchain.tip();
+                            for block in unwrapped_blockchain.all_blocks_in_longest_chain() {
+                                index += 1;
+                                if index == lambda {
+                                    block_hash = block.hash();
+                                    break;
+                                }
+                            }
+                            let state = unwrapped_blockchain.state_map.get(&block_hash).unwrap().clone();
+                            let mut all_addresses = Vec::new();
+                            for (address, (nonce, balance)) in state.state {
+                                all_addresses.push((address, nonce, balance));
+                            }
+                            respond_json!(req, all_addresses);
+                        }
+
                         "/blockchain/longest-chain-tx-count" => {
                             respond_result!(req, false, "unimplemented!");
                         }

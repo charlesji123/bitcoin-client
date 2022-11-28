@@ -39,7 +39,7 @@ impl Worker {
                 self.tx_loop();
             })
             .unwrap();
-        print!("txgen worker started");
+        println!("txgen worker started");
         info!("tx generator initialized into paused mode");
     }
 

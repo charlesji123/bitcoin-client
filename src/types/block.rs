@@ -1,16 +1,20 @@
+use std::collections::HashMap;
 use std::collections::btree_set::Difference;
 
 use serde::{Serialize, Deserialize};
+use crate::blockchain::State;
 use crate::types::hash::{H256, Hashable};
 use crate::types::transaction::SignedTransaction;
 use rand::{thread_rng, Rng};
 use crate::types::merkle::MerkleTree;
 use hex_literal::hex;
 
+use super::address::Address;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Header {
     pub parent: H256,
-    pub nonce: u32,
+    pub nonce: usize,
     pub difficulty: H256,
     pub timestamp: u128,
     pub merkle_root: H256,
@@ -92,7 +96,7 @@ pub fn generate_genesis_block(parent: &H256) -> Block {
     let merkle_root = merkle_tree.root();
     let difficulty = hex!("000effffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").into(); // set maximum difficulty
     let timestamp: u128 = 0;
-    let nonce: u32 = 0;
+    let nonce: usize = 0;
   
     let header = Header {
         parent: *parent,
@@ -105,4 +109,5 @@ pub fn generate_genesis_block(parent: &H256) -> Block {
     
     let content = Content {transactions: Vec::new()};
     Block {header, content}
+    
 }

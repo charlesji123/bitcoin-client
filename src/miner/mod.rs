@@ -10,6 +10,7 @@ use std::thread;
 
 use crate::network;
 use crate::network::message::Message;
+use crate::types::address::Address;
 use crate::types::block::{Block, Header, Content};
 use crate::blockchain::{Blockchain, Mempool};
 use crate::types::hash::Hashable;
@@ -69,7 +70,7 @@ pub fn new(blockchain: &Arc<Mutex<Blockchain>>, mempool: &Arc<Mutex<Mempool>>) -
 
 #[cfg(any(test,test_utilities))]
 fn test_new() -> (Context, Handle, Receiver<Block>) {
-    let new_blockchain= &Arc::new(Mutex::new(Blockchain::new()));
+    let new_blockchain= &Arc::new(Mutex::new(Blockchain::new(0)));
     let new_mempool = &Arc::new(Mutex::new(Mempool::new()));
     new(new_blockchain, new_mempool)
 }
@@ -104,8 +105,6 @@ impl Context {
     fn miner_loop(&mut self) {
         // main mining loop
         loop {
-            // update the parent
-            let parent = self.arc_mutex.lock().unwrap().tip().clone();
             // check and react to control signals
             match self.operating_state {
                 OperatingState::Paused => {
@@ -151,40 +150,80 @@ impl Context {
             if let OperatingState::ShutDown = self.operating_state {
                 return;
             }
+            
+            let parent = self.arc_mutex.lock().unwrap().tip().clone();
+            let mut state_copy = self.arc_mutex.lock().unwrap().state_map.get(&parent).unwrap().clone();
 
-            // let blockchain = &mut self.arc_mutex.lock().unwrap();
-            // tip = {
-            //     block = 
-            //     block.tip()
-            // }
             let mut this_block_transactions= Vec::new();
             // if the block is consistent with the difficulty of the blockchain, insert the block into the blockchain
             // update the block's transactions based on the mempool before inserting into the blockchain
-            if self.mempool.lock().unwrap().hash_map.len() > 32 {
-                let mut count = 0;
-                for (hash, transaction) in self.mempool.lock().unwrap().hash_map.clone() {
+            let mut count = 0;
+            for (hash, transaction) in self.mempool.lock().unwrap().hash_map.clone() {
+                let mut transaction_is_valid = true;
+
+                let sender = Address::from_public_key_bytes(transaction.signer_public_key.as_slice());
+                let receiver = transaction.t.receiver;
+                let tx_amount = transaction.t.value;
+                let tx_nonce = transaction.t.account_nonce;
+                // update the state and append the transaction if the transaction is valid
+                if state_copy.state.contains_key(&sender) {
+                    println!("sender is in state, miner loop");
+                    // spending check
+                    if tx_amount > state_copy.state.get(&sender).unwrap().1 || tx_nonce != state_copy.state.get(&sender).unwrap().0 + 1{
+                        transaction_is_valid = false;
+                    }
+                    // transaction signature check skipped because sender's address is not included in Transaction
+                    // if it agrees, update the state of the sender
+                    else {
+                        let mut nonce = state_copy.state.get(&sender).unwrap().0;
+                        let mut balance = state_copy.state.get(&sender).unwrap().1;
+                        nonce = nonce + 1;
+                        balance = balance - tx_amount;
+
+                        state_copy.state.insert(sender, (nonce, balance));
+                        println!("passed the spending check, and sender state updated");
+                    }
+                }
+                else {
+                    transaction_is_valid = false;
+                }
+                
+                // then update the state of the receiver 
+                if state_copy.state.contains_key(&receiver) && transaction_is_valid {
+                    let mut nonce = state_copy.state.get(&receiver).unwrap().0;
+                    let mut balance = state_copy.state.get(&receiver).unwrap().1;
+                    nonce += 1;
+                    balance += tx_amount;
+                    state_copy.state.insert(receiver, (nonce, balance));
+                    println!("receiver state updated, miner loop");
+                } 
+                // create a new entry for the receiver if it does not exist
+                else {
+                    let new_receiver = receiver;
+                    let nonce = 0;
+                    let balance = tx_amount;
+                    state_copy.state.insert(new_receiver, (nonce, balance));
+                    println!("new receiver state created, miner loop");
+                }
+                // only append transaction if it is valid
+                if transaction_is_valid {
                     this_block_transactions.push(transaction);
                     count += 1;
-                    if count >= 32 {
+                    if count >= 16 {
                         break;
                     }
-                }                    
-            }
-            else if self.mempool.lock().unwrap().hash_map.len() != 0 {
-                for (hash, transaction) in self.mempool.lock().unwrap().hash_map.clone() {
-                    this_block_transactions.push(transaction);
-                }
-            }
+                } 
+            }                    
 
             // After initializing the transactions, initialize timestap, difficulty, content, merkle root, and nonce
             let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
             let difficulty = self.arc_mutex.lock().unwrap().hash_map.get(&parent).unwrap().header.difficulty;
 
             let merkle_tree = MerkleTree::new(&this_block_transactions);
-            let merkle_root = merkle_tree.root();
+            let merkle_root = merkle_tree.root(); // hash of the block is the hash of the merkle root
 
             let mut rng = rand::thread_rng();
-            let nonce: u32 = rng.gen();
+            let nonce: usize = rng.gen();
 
             let header = Header {
                 parent,
@@ -207,8 +246,32 @@ impl Context {
                 for transactions in block.content.transactions.clone() {
                     self.mempool.lock().unwrap().hash_map.remove(&transactions.hash());
                 }
+
                 self.arc_mutex.lock().unwrap().insert(&block); 
+                self.arc_mutex.lock().unwrap().state_map.insert(block.hash(), state_copy);
                 self.finished_block_chan.send(block.clone()).expect("Send finished block error");
+
+                // After successful block insertion, state changes, so implement Transaction Mempool Update to purify the mempool
+                let tip = self.arc_mutex.lock().unwrap().tip().clone();
+                println!("length of the blockchain's state hashmap is is {}", self.arc_mutex.lock().unwrap().state_map.len());
+                print!(" number of accounts in the tip's state is {} ", self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().state.len());
+                if self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().state.len() > 0 {
+                    let state_copy = self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone();
+                    for (hash, signed_transaction) in self.mempool.lock().unwrap().hash_map.clone() {
+                        let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
+                        let amount = signed_transaction.t.value;
+                        // remove the tx if the sender's balance is less than the amount
+                        if state_copy.state.contains_key(&sender) {
+                            if amount > state_copy.state.get(&sender).unwrap().1 {
+                                self.mempool.lock().unwrap().hash_map.remove(&hash);
+                            }
+                        }
+                        // or if the state map does not contain the sender
+                        else {
+                            self.mempool.lock().unwrap().hash_map.remove(&hash);
+                        }
+                    }
+                }
             }
 
             if let OperatingState::Run(i) = self.operating_state {

@@ -3,15 +3,18 @@ pub mod worker;
 use log::info;
 
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
-use ring::signature::KeyPair;
+use rand::Rng;
+use ring::signature::{KeyPair, Ed25519KeyPair};
 use core::time;
 use std::thread;
 
 use crate::network::{self, server};
+use crate::types::address::Address;
 use crate::types::block::{Block, Header, Content};
 use crate::blockchain::{Blockchain, Mempool};
 use crate::types::hash::Hashable;
-use crate::types::transaction::SignedTransaction;
+use crate::types::key_pair;
+use crate::types::transaction::{SignedTransaction, sign, Transaction};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,6 +38,7 @@ pub struct Context {
     operating_state: OperatingState,
     finished_tx_chan: Sender<SignedTransaction>,
     mempool: Arc<Mutex<Mempool>>,
+    key_pairs: Vec<Ed25519KeyPair>,
 }
 
 #[derive(Clone)]
@@ -43,9 +47,14 @@ pub struct Handle {
     control_chan: Sender<ControlSignal>,
 }
 
-pub fn new(blockchain: &Arc<Mutex<Blockchain>>, mempool: &Arc<Mutex<Mempool>>) -> (Context, Handle, Receiver<SignedTransaction>) {
+pub fn new(blockchain: &Arc<Mutex<Blockchain>>, mempool: &Arc<Mutex<Mempool>>, seed: u8) -> (Context, Handle, Receiver<SignedTransaction>) {
+    println!("creating a new txgen");
     let (signal_chan_sender, signal_chan_receiver) = unbounded();
     let (finished_tx_sender, finished_tx_receiver) = unbounded();
+    let mut key_pairs = Vec::new();
+    let genesis_keypair = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
+    key_pairs.push(genesis_keypair); // initialize the key pairs to genesis hash
+    println!("genesis address generated");
 
     let ctx = Context {
         arc_mutex: Arc::clone(blockchain),
@@ -53,6 +62,7 @@ pub fn new(blockchain: &Arc<Mutex<Blockchain>>, mempool: &Arc<Mutex<Mempool>>) -
         operating_state: OperatingState::Paused,
         finished_tx_chan: finished_tx_sender,
         mempool: Arc::clone(mempool),
+        key_pairs,
     };
 
     let txgen_handle = Handle {
@@ -64,9 +74,9 @@ pub fn new(blockchain: &Arc<Mutex<Blockchain>>, mempool: &Arc<Mutex<Mempool>>) -
 
 #[cfg(any(test,test_utilities))]
 fn test_new() -> (Context, Handle, Receiver<SignedTransaction>) {
-    let new_blockchain= &Arc::new(Mutex::new(Blockchain::new()));
+    let new_blockchain= &Arc::new(Mutex::new(Blockchain::new(0)));
     let new_mempool = &Arc::new(Mutex::new(Mempool::new()));
-    new(new_blockchain, new_mempool)
+    new(new_blockchain, new_mempool, 0)
 }
 
 impl Handle {
@@ -93,11 +103,11 @@ impl Context {
                 self.tx_loop();
             })
             .unwrap();
-        info!("Miner initialized into paused mode");
+        info!("Txgen initialized into paused mode");
     }
 
     fn tx_loop(&mut self) {
-        // main mining loop
+        // main tx gening loop
         loop {
             // check and react to control signals
             match self.operating_state {
@@ -125,11 +135,11 @@ impl Context {
                     Ok(signal) => {
                         match signal {
                             ControlSignal::Exit => {
-                                info!("Miner shutting down");
+                                info!("Tx Generator shutting down");
                                 self.operating_state = OperatingState::ShutDown;
                             }
                             ControlSignal::Start(i) => {
-                                info!("Miner starting in continuous mode with theta {}", i);
+                                info!("Tx Generatir starting in continuous mode with theta {}", i);
                                 self.operating_state = OperatingState::Run(i);
                             }
                             ControlSignal::Update => {
@@ -138,31 +148,94 @@ impl Context {
                         };
                     }
                     Err(TryRecvError::Empty) => {}
-                    Err(TryRecvError::Disconnected) => panic!("Miner control channel detached"),
+                    Err(TryRecvError::Disconnected) => panic!("Tx Generator control channel detached"),
                 },
             }
             if let OperatingState::ShutDown = self.operating_state {
                 return;
             }
-            
-            // generate a random signed transaction
-            let random_transaction = crate::types::transaction::generate_random_transaction();
-            let signer_public_key = crate::types::key_pair::random();
-            let signature_vector = crate::types::transaction::sign(&random_transaction, &signer_public_key);
+            println!("txgen is running");
 
+            // dynamically generate sender addresses by setting the probability of creating a new keypair as 0.5
+            let probability = rand::random::<bool>();
+            if probability {
+                // insert the new key pair into the key pairs controlled by this node
+                self.key_pairs.push(key_pair::random());
+                // update the state to create a new account for this new key pair
+                let new_address = Address::from_public_key_bytes(self.key_pairs[self.key_pairs.len() - 1].public_key().as_ref().to_vec().as_slice());
+                // self.arc_mutex.lock().unwrap().state_map.get_mut(&self.arc_mutex.lock().unwrap().tip()).unwrap().state.insert(new_address, (0, 0));
+                println!("new sender address generated {}", new_address);
+            }
+            println!("this stage 1");
+
+            // pick a random recipent address from the state
+            let tip = self.arc_mutex.lock().unwrap().tip();
+            let all_accounts = self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone();
+            let mut receiver = all_accounts.state.keys().nth(rand::random::<usize>() % all_accounts.state.len()).unwrap().clone();
+
+            // if a new key pair was generated, set it as the recipient address for this transaction
+            if probability {
+                receiver = Address::from_public_key_bytes(self.key_pairs[self.key_pairs.len() - 1].public_key().as_ref().to_vec().as_slice()).clone();
+            }
+            // pick a random key pair as the sender
+            let mut sender_index = rand::random::<usize>() % self.key_pairs.len();
+            // if a new key pair was generated, avoid assigning it as the sender
+            if probability {
+                sender_index = rand::random::<usize>() % self.key_pairs.len()-1;
+            }
+            println!("this stage 2");
+
+            // generate a new transaction
+            let account_nonce = all_accounts.state.get(&receiver).unwrap().0 + 1;
+            let sender = Address::from_public_key_bytes(self.key_pairs[sender_index].public_key().as_ref().to_vec().as_slice()).clone();
+            let value = rand::random::<usize>() % all_accounts.state.get(&sender).unwrap().1;
+            let new_transaction = Transaction {
+                receiver,
+                value,
+                account_nonce,
+            };
+            println!("this stage 3");
+
+            let signature_vector = crate::types::transaction::sign(&new_transaction, &self.key_pairs[sender_index]);
             let signed_transaction = SignedTransaction {
-                t: random_transaction,
+                t: new_transaction,
                 signature_vector: signature_vector.as_ref().to_vec(),
-                signer_public_key: signer_public_key.public_key().as_ref().to_vec(),
+                signer_public_key: self.key_pairs[sender_index].public_key().as_ref().to_vec(),
             };
             let signed_hash = signed_transaction.hash();
-            print!("{}", signed_hash);
+            println!("new signed transaction generated with signed hash: {}", signed_hash);
 
             let signed_transaction_clone = signed_transaction.clone();
+
+            // check if the state agrees with the transaction
+            let mut transaction_valid = true;
+            // let blockchain_preclone = self.arc_mutex.lock().unwrap();
+            // let state_copy_preclone = blockchain_preclone.state_map.get(&self.arc_mutex.lock().unwrap().tip()).unwrap();
+            // let state_copy = (*state_copy_preclone).clone();
+            // drop(state_copy_preclone);
+            // drop(blockchain_preclone);
+            let state_copy = self.arc_mutex.lock().unwrap().state_map.get(&self.arc_mutex.lock().unwrap().tip()).unwrap().clone();
+            let signer_address = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
+            let balance = state_copy.state.get(&signer_address).unwrap().1;
+            let nonce = state_copy.state.get(&signer_address).unwrap().0;
+
+            if signed_transaction.t.account_nonce != nonce + 1 || signed_transaction.t.value > balance {
+                transaction_valid = false;
+            }
+            else {
+                println!("the newly generated transaction passes the state check");
+            }
+
+            // if the state agrees
+            if transaction_valid {
             // add the transaction to mempool and pass it on to the worker for broadcasting
-            self.mempool.lock().unwrap().hash_map.insert(signed_hash, signed_transaction);
-            self.finished_tx_chan.send(signed_transaction_clone).unwrap();
-            print!("new transaction generated: {}", signed_hash);
+                self.mempool.lock().unwrap().hash_map.insert(signed_hash, signed_transaction);
+                self.finished_tx_chan.send(signed_transaction_clone).unwrap();
+                print!("new transaction generated: {}", signed_hash);
+            }
+            else {
+                print!("invalid transaction generated: {}", signed_hash);
+            }
 
             if let OperatingState::Run(i) = self.operating_state {
                 if i != 0 {

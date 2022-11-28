@@ -4,9 +4,10 @@ use super::server::Handle as ServerHandle;
 use crate::types::address::Address;
 use crate::types::block::Block;
 use crate::types::hash::{H256, Hashable};
-use crate::blockchain::{Blockchain, Mempool};
+use crate::blockchain::{Blockchain, Mempool, State};
 use crate::types::transaction::{Transaction, SignedTransaction, sign};
 use std::collections::HashMap;
+use std::convert::{TryInto, TryFrom};
 use std::io::{self, Write};
 use std::thread::{self, current};
 use std::sync::{Arc, Mutex};
@@ -110,18 +111,23 @@ impl Worker {
                 Message::Blocks(blockvec) => {
                     let mut new_hashes = Vec::<H256>::new();
                     let mut parent_vec = Vec::new();
-                    // For all blocks in the message
+                    // Check the block before inserting the block into blockchain
                     for block in blockvec {
                     // Check if the block passed POW difficulty check
                         let pow_passed = block.hash() <= self.wrapped_blockchain.lock().unwrap().tip();
                         print!(" this is block hash: {} ", block.hash());
                         print!(" block difficulty: {} ", self.wrapped_blockchain.lock().unwrap().tip());
-                        print!(" whether pow check is passed {} ", pow_passed);
                     
                         // Check if transactions in a block are valid
                         let block_clone = block.clone(); 
                         let signed_transactions = block_clone.content.transactions;
                         let mut transaction_is_valid = true;
+
+                        // get the state of the blockchain tip
+                        let tip = self.wrapped_blockchain.lock().unwrap().tip();
+                        let mut state_copy = self.wrapped_blockchain.lock().unwrap().state_map.get(&tip).unwrap().clone();
+                        
+                        // Check the block's transactions before updating the state of the block 
                         for signed_transaction in signed_transactions {
                         // by first checking if transaction signature is valid
                             if !verify(&signed_transaction.t, &signed_transaction.signature_vector, &signed_transaction.signer_public_key) {
@@ -130,11 +136,77 @@ impl Worker {
                             if Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice()) != signed_transaction.t.receiver {
                                 transaction_is_valid = false;
                             }
+                            let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
+                            let receiver = signed_transaction.t.receiver;
+
+                            let amount = signed_transaction.t.value;
+                            let nonce = signed_transaction.t.account_nonce;
+
+                            // check if the state agrees with the validity of the transaction
+                            if state_copy.state.contains_key(&sender) && transaction_is_valid {
+                                println!("sender is in state");
+                                // spending check
+                                if amount > state_copy.state.get(&sender).unwrap().1 || nonce != state_copy.state.get(&sender).unwrap().0 + 1{
+                                    transaction_is_valid = false;
+                                }
+                                // transaction signature check skipped because sender's address is not included in Transaction
+                                // if it agrees, update the state of the sender
+                                else {
+                                    let mut addr_nonce = state_copy.state.get(&sender).unwrap().0;
+                                    let mut addr_balance = state_copy.state.get(&sender).unwrap().1;
+                                    addr_nonce = addr_nonce + 1;
+                                    addr_balance = addr_balance - amount;
+
+                                    state_copy.state.insert(sender, (addr_nonce, addr_balance));
+                                    println!("passed the spending check, and sender state updated");
+                                }
+                            }
+                            else {
+                                transaction_is_valid = false;
+                            }
+                            // then update the state of the receiver 
+                            if state_copy.state.contains_key(&receiver) && transaction_is_valid {
+                                let mut addr_nonce = state_copy.state.get(&receiver).unwrap().0;
+                                let mut addr_balance = state_copy.state.get(&receiver).unwrap().1;
+                                addr_nonce = addr_nonce + 1;
+                                addr_balance = addr_balance + amount;
+                                state_copy.state.insert(receiver, (addr_nonce, addr_balance));
+                                println!("receiver state updated");
+                            } 
+                            // create a new entry for the receiver if it does not exist
+                            // *** allows nodes to record addresses created by other nodes
+                            else {
+                                let addr_nonce = 0;
+                                let addr_balance = amount;
+                                state_copy.state.insert(receiver, (addr_nonce, addr_balance));
+                                println!("new receiver state created");
+                            }
+                        }
+                        // ***Insert the updated state into the blockchain's state hashmap
+                        self.wrapped_blockchain.lock().unwrap().state_map.insert(block.hash(), state_copy.clone());
+                        println!("state map updated");
+
+                        // After updating the state per block, update the mempool to prevent double spending (Transaction Mempool Update)
+                        let new_state_copy = state_copy.clone();
+                        for (hash, signed_transaction) in self.wrapped_mempool.lock().unwrap().hash_map.clone() {
+                            let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
+                            let amount = signed_transaction.t.value;
+                            if new_state_copy.state.contains_key(&sender) {
+                                let balance = new_state_copy.state.get(&sender).unwrap().1;
+                                if amount > balance {
+                                    self.wrapped_mempool.lock().unwrap().hash_map.remove(&hash);
+                                }
+                            }
+                            // if the sender is not in the state, remove the transaction from the mempool
+                            else {
+                                self.wrapped_mempool.lock().unwrap().hash_map.remove(&hash);
+                            }
                         }
 
+                        // After updating the mempool, proceed to insert the block
                         // If the blockchain does not already contain the block
                         if !self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash()) && pow_passed && transaction_is_valid {
-                            print!("{}", !self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash()) && pow_passed && transaction_is_valid);
+                            println!("are we proceeeding to insert the block: {}", !self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash()) && pow_passed && transaction_is_valid);
                             let current_blockchain = self.wrapped_blockchain.lock().unwrap();
                             // But contains the block's parent, add the block to the blockchain and remove the block's transactions from the mempool
                             if current_blockchain.hash_map.contains_key(&block.get_parent()) {
@@ -148,10 +220,6 @@ impl Worker {
                                     }
                                 }
                             }
-                            // after we check the block's parent, now we check if the block header is consistent
-                            // if block.get_parent().hash() != block.get_difficulty() {
-                            //     break;
-                            // }
 
                             // if the new block is the parent of any block in the buffer
                             let mut parent_hash = block.hash();
@@ -222,13 +290,24 @@ impl Worker {
                     // retrive the trasnactions of the hashes from the mempool, and check their validity
                     for signed_transaction in signed_transactions {
                         // first, check transaction signature validity
+                        let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
                         if !verify(&signed_transaction.t, &signed_transaction.signature_vector, &signed_transaction.signer_public_key) {
                             signature_is_valid = false;
                         }
-                        if Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice()) != signed_transaction.t.receiver {
+                        if sender != signed_transaction.t.receiver {
                             signature_is_valid = false;
                         }
-                        // double spending check: todo()
+
+                        // spending check
+                        let amount = signed_transaction.t.value;
+                        let nonce = signed_transaction.t.account_nonce;
+                        let state_map = &self.wrapped_blockchain.lock().unwrap().state_map;
+                        let state = state_map.get(&signed_transaction.hash()).clone();
+                        let state_option = Option::expect(state.clone(), "state not found");
+                        // if the amount is larger than the balance or the nonce is not 1 + account nonce , the transaction is invalid
+                        if amount > state_option.state.get(&sender).unwrap().1 || nonce != state_option.state.get(&sender).unwrap().0 + 1{
+                            signature_is_valid = false;
+                        }
 
                         // if the transaction is not in the mempool, add it to the mempool
                         if !self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&signed_transaction.hash()) && signature_is_valid {
@@ -277,7 +356,7 @@ fn generate_test_worker_and_start() -> (TestMsgSender, ServerTestReceiver, Vec<H
 
     let (server, server_receiver) = ServerHandle::new_for_test();
     let (test_msg_sender, msg_chan) = TestMsgSender::new();
-    let new_blockchain= &Arc::new(Mutex::new(Blockchain::new()));
+    let new_blockchain= &Arc::new(Mutex::new(Blockchain::new(0)));
     let new_mempool = &Arc::new(Mutex::new(Mempool::new()));
     let worker = Worker::new(1, msg_chan, &server, new_blockchain, new_mempool);
     worker.start(); 

@@ -37,10 +37,7 @@ fn main() {
     // init logger
     let verbosity = matches.occurrences_of("verbose") as usize;
     stderrlog::new().verbosity(verbosity).init().unwrap();
-    let blockchain = Blockchain::new();
-    let mempool = Mempool::new();
-    let blockchain = Arc::new(Mutex::new(blockchain));
-    let mempool = Arc::new(Mutex::new(mempool));
+
     // parse p2p server address
     let p2p_addr = matches
         .value_of("peer_addr")
@@ -50,6 +47,22 @@ fn main() {
             error!("Error parsing P2P server address: {}", e);
             process::exit(1);
         });
+    let mut seed = 0;
+    if p2p_addr == "127.0.0.1:6000".parse::<net::SocketAddr>().unwrap() {
+        seed = 0;
+    }
+    else if p2p_addr == "127.0.0.1:6001".parse::<net::SocketAddr>().unwrap() {
+        seed = 1;
+    }
+    else if p2p_addr == "127.0.0.1:6002".parse::<net::SocketAddr>().unwrap() {
+        seed = 2;
+    }
+    print!("{}", seed);
+
+    let blockchain = Blockchain::new(seed);
+    let mempool = Mempool::new();
+    let blockchain = Arc::new(Mutex::new(blockchain));
+    let mempool = Arc::new(Mutex::new(mempool));
 
     // parse api server address
     let api_addr = matches
@@ -86,8 +99,9 @@ fn main() {
     );
     worker_ctx.start();
 
+    print!("starting txgen from main");
     // start the transaction generator
-    let (tx_ctx, tx, finished_tx_chan) = txgen::new(&blockchain, &mempool);
+    let (tx_ctx, tx, finished_tx_chan) = txgen::new(&blockchain, &mempool, seed);
     let tx_worker_ctx = txgen::worker::Worker::new(&server, finished_tx_chan, &blockchain, &mempool);
     tx_ctx.start();
     tx_worker_ctx.start();

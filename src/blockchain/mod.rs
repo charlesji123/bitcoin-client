@@ -1,12 +1,24 @@
+use crate::types::address::Address;
 use crate::types::block::{Block,generate_random_block, generate_genesis_block};
 use crate::types::hash::{H256, Hashable};
+use crate::types::key_pair;
 use crate::types::transaction::SignedTransaction;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::thread::current;
+use hex_literal::hex;
+use ring::signature::{Ed25519KeyPair, KeyPair};
+use url::quirks::port;
 
 pub struct Blockchain {
     pub hash_map: HashMap<H256, Block>,
     tip: H256,
+    pub state_map:HashMap<H256, State> // state per block
+}
+
+#[derive(Clone)]
+pub struct State {
+    pub state: HashMap<Address, (usize, usize)> // mapping from account address to (account nonce, balance)
 }
 
 
@@ -17,14 +29,40 @@ pub struct Mempool {
 
 impl Blockchain {
     /// Create a new blockchain, only containing the genesis block
-    pub fn new() -> Self {
+    pub fn new(seed: u8) -> Self {
         let parent: [u8; 32] = [0; 32];
         let parent_hash = H256::from(parent);
         let genesis_block: Block = generate_genesis_block(&parent_hash);
         let genesis_hash = genesis_block.hash();
         let mut hash_map: HashMap <H256, Block> = HashMap::new();
         hash_map.insert(genesis_hash, genesis_block);
-        Blockchain { hash_map, tip: genesis_hash }
+
+        // create 3 determinstic key pairs based on the seed fed by port IP
+        let mut second_seed = 1;
+        let mut third_seed = 2;
+        if seed == 1 {
+            second_seed = 0;
+            third_seed = 2;
+        }
+        else if seed == 2 {
+            second_seed = 0;
+            third_seed = 1;
+        }
+        let genesis_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap().public_key().as_ref());
+        let second_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[second_seed; 32]).unwrap().public_key().as_ref());
+        let third_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[third_seed; 32]).unwrap().public_key().as_ref());
+
+        // initialize a new state that contains 3 address, nonce, and balance
+        let mut state = HashMap::new();
+        state.insert(genesis_address, (0, 100));
+        state.insert(second_address, (0, 0));
+        state.insert(third_address, (0, 0));
+
+        // insert the new state into the state map per genesis block
+        let mut state_map = HashMap::new();
+        state_map.insert(genesis_hash, State {state});
+
+        Blockchain { hash_map, tip: genesis_hash, state_map }
     }
 
     /// Insert a block into blockchain
@@ -36,6 +74,7 @@ impl Blockchain {
             self.tip = hash;
         }
         self.hash_map.insert(hash, new_block);
+        println!("block is inserted in the blockchain insert() function");
     }
 
     /// Get the last block's hash of the longest chain
@@ -79,6 +118,7 @@ impl Blockchain {
         }
         return all_txs;
     }
+
 }
 
 impl Mempool {
@@ -109,7 +149,7 @@ mod tests {
 
     #[test]
     fn insert_one() {
-        let mut blockchain = Blockchain::new();
+        let mut blockchain = Blockchain::new(0);
         let genesis_hash = blockchain.tip();
         let block = generate_random_block(&genesis_hash);
         blockchain.insert(&block);
