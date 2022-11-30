@@ -38,23 +38,13 @@ impl Blockchain {
         hash_map.insert(genesis_hash, genesis_block);
 
         // create 3 determinstic key pairs based on the seed fed by port IP
-        let mut second_seed = 1;
-        let mut third_seed = 2;
-        if seed == 1 {
-            second_seed = 0;
-            third_seed = 2;
-        }
-        else if seed == 2 {
-            second_seed = 0;
-            third_seed = 1;
-        }
-        let genesis_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap().public_key().as_ref());
-        let second_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[second_seed; 32]).unwrap().public_key().as_ref());
-        let third_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[third_seed; 32]).unwrap().public_key().as_ref());
-
+        let first_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[0; 32]).unwrap().public_key().as_ref());
+        let second_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[1; 32]).unwrap().public_key().as_ref());
+        let third_address = Address::from_public_key_bytes(Ed25519KeyPair::from_seed_unchecked(&[2; 32]).unwrap().public_key().as_ref());
+        
         // initialize a new state that contains 3 address, nonce, and balance
         let mut state = HashMap::new();
-        state.insert(genesis_address, (0, 100));
+        state.insert(first_address, (0, 100));
         state.insert(second_address, (0, 0));
         state.insert(third_address, (0, 0));
 
@@ -67,14 +57,42 @@ impl Blockchain {
 
     /// Insert a block into blockchain
     pub fn insert(&mut self, block: &Block) {
-        let hash = block.hash();
-        let mut new_block = block.clone(); 
-        new_block.header.length = self.hash_map.get(&new_block.get_parent()).unwrap().header.length + 1;
-        if new_block.header.length > self.hash_map.get(&self.tip).unwrap().header.length {
-            self.tip = hash;
+        let new_block = block.clone(); 
+        println!(" pass the length test?: {}", new_block.header.length > self.hash_map.get(&self.tip()).unwrap().header.length);
+        if new_block.header.length > self.hash_map.get(&self.tip()).unwrap().header.length {
+            println!("is tip same as parent?: {}", new_block.get_parent() == self.tip());
+            
+            self.hash_map.insert(block.hash(), new_block);
+            self.tip = block.hash();
+            let mut state_copy = self.state_map.get(&block.get_parent()).unwrap().clone();
+
+            for transaction in &block.content.transactions {
+                // update the state of the sender
+                let receiver = transaction.t.receiver;
+                let sender = Address::from_public_key_bytes(transaction.signer_public_key.as_slice());
+                let tx_amount = transaction.t.value;
+
+                let new_nonce = state_copy.state.get(&sender).unwrap().0 + 1;
+                let new_balance = state_copy.state.get(&sender).unwrap().1 - tx_amount;
+
+                state_copy.state.insert(sender, (new_nonce, new_balance));
+
+                if state_copy.state.contains_key(&receiver) {
+                    let rec_nonce = state_copy.state.get(&receiver).unwrap().0;
+                    let rec_balance = state_copy.state.get(&receiver).unwrap().1 + tx_amount;
+                    state_copy.state.insert(receiver, (rec_nonce, rec_balance));
+                    println!("receiver state updated");
+                }
+                // create a new entry for the receiver if it does not exist
+                else {
+                    state_copy.state.insert(receiver, (0, tx_amount));
+                    println!("new receiver state created");
+                }
+            }
+            self.state_map.insert(block.hash(), state_copy);
         }
-        self.hash_map.insert(hash, new_block);
         println!("block is inserted in the blockchain insert() function");
+        println!("does blockchain contain the parent in the blockchain mod {}", self.hash_map.contains_key(&block.get_parent()));
     }
 
     /// Get the last block's hash of the longest chain

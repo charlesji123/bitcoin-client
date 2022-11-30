@@ -85,240 +85,248 @@ impl Worker {
                     debug!("Pong: {}", nonce);
                 }
                 Message::NewBlockHashes(hashvec) => {
+                    println!("newblockhashes msg with length hashvec: {}", hashvec.len());
                     let mut new_hashes = Vec::<H256>::new();
                     for hash in hashvec {
-                        if !&self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&hash) {
+                        print!(" this hash is {} ", hash);
+                        print!("block hashmap length {}", {self.wrapped_blockchain.lock().unwrap().hash_map.len()});
+                        println!(" blockchain contains hash: {}", {self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&hash)});
+                        if !self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&hash) {
                             new_hashes.push(hash);
                         }
+                        println!("for loop ends");
                     }
-                    peer.write(Message::GetBlocks(new_hashes));
+                    println!("new_hashes length: {:?}", new_hashes.len());
+                    if new_hashes.len() > 0 {
+                        peer.write(Message::GetBlocks(new_hashes));
+                        println!("sent getblocks msg");
+                    }
                 }
                 Message::GetBlocks(hashvec) => {
+                    println!("Getblocks msg");
                     let mut blocks = Vec::new();
                     
                     for hash in hashvec {
                         if self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&hash){ 
-                            let blockchain_local = self.wrapped_blockchain.lock().unwrap();
+                            let blockchain_local = {self.wrapped_blockchain.lock().unwrap()};
                             let block_response = blockchain_local.hash_map.get(&hash);
                             let block_option = Option::expect(block_response, "block not found");
                             blocks.push(block_option.clone());
+                            println!("block hash in GetBlocks: {}", block_option.hash());
                         } 
                     }
-
-                    peer.write(Message::Blocks(blocks));
+                    if blocks.len() > 0 {
+                        peer.write(Message::Blocks(blocks));
+                    }
                 }
 
                 Message::Blocks(blockvec) => {
+                    println!("Blocks in message blocks {:?}", blockvec);
                     let mut new_hashes = Vec::<H256>::new();
                     let mut parent_vec = Vec::new();
                     // Check the block before inserting the block into blockchain
                     for block in blockvec {
-                    // Check if the block passed POW difficulty check
-                        let pow_passed = block.hash() <= self.wrapped_blockchain.lock().unwrap().tip();
-                        print!(" this is block hash: {} ", block.hash());
-                        print!(" block difficulty: {} ", self.wrapped_blockchain.lock().unwrap().tip());
-                    
+                        println!("does blockchain contain the parent in network {}", {self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.get_parent())});
+                        // Check if the block passed POW difficulty check
+                        let pow_passed = block.hash() <= block.get_difficulty();
+                        
                         // Check if transactions in a block are valid
                         let block_clone = block.clone(); 
                         let signed_transactions = block_clone.content.transactions;
-                        let mut transaction_is_valid = true;
-
-                        // get the state of the blockchain tip
-                        let tip = self.wrapped_blockchain.lock().unwrap().tip();
-                        let mut state_copy = self.wrapped_blockchain.lock().unwrap().state_map.get(&tip).unwrap().clone();
-                        
-                        // Check the block's transactions before updating the state of the block 
-                        for signed_transaction in signed_transactions {
-                        // by first checking if transaction signature is valid
-                            if !verify(&signed_transaction.t, &signed_transaction.signature_vector, &signed_transaction.signer_public_key) {
-                                transaction_is_valid = false;
-                            }
-                            if Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice()) != signed_transaction.t.receiver {
-                                transaction_is_valid = false;
-                            }
-                            let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
-                            let receiver = signed_transaction.t.receiver;
-
-                            let amount = signed_transaction.t.value;
-                            let nonce = signed_transaction.t.account_nonce;
-
-                            // check if the state agrees with the validity of the transaction
-                            if state_copy.state.contains_key(&sender) && transaction_is_valid {
-                                println!("sender is in state");
-                                // spending check
-                                if amount > state_copy.state.get(&sender).unwrap().1 || nonce != state_copy.state.get(&sender).unwrap().0 + 1{
-                                    transaction_is_valid = false;
-                                }
-                                // transaction signature check skipped because sender's address is not included in Transaction
-                                // if it agrees, update the state of the sender
-                                else {
-                                    let mut addr_nonce = state_copy.state.get(&sender).unwrap().0;
-                                    let mut addr_balance = state_copy.state.get(&sender).unwrap().1;
-                                    addr_nonce = addr_nonce + 1;
-                                    addr_balance = addr_balance - amount;
-
-                                    state_copy.state.insert(sender, (addr_nonce, addr_balance));
-                                    println!("passed the spending check, and sender state updated");
-                                }
-                            }
-                            else {
-                                transaction_is_valid = false;
-                            }
-                            // then update the state of the receiver 
-                            if state_copy.state.contains_key(&receiver) && transaction_is_valid {
-                                let mut addr_nonce = state_copy.state.get(&receiver).unwrap().0;
-                                let mut addr_balance = state_copy.state.get(&receiver).unwrap().1;
-                                addr_nonce = addr_nonce + 1;
-                                addr_balance = addr_balance + amount;
-                                state_copy.state.insert(receiver, (addr_nonce, addr_balance));
-                                println!("receiver state updated");
-                            } 
-                            // create a new entry for the receiver if it does not exist
-                            // *** allows nodes to record addresses created by other nodes
-                            else {
-                                let addr_nonce = 0;
-                                let addr_balance = amount;
-                                state_copy.state.insert(receiver, (addr_nonce, addr_balance));
-                                println!("new receiver state created");
-                            }
-                        }
-                        // ***Insert the updated state into the blockchain's state hashmap
-                        self.wrapped_blockchain.lock().unwrap().state_map.insert(block.hash(), state_copy.clone());
-                        println!("state map updated");
-
-                        // After updating the state per block, update the mempool to prevent double spending (Transaction Mempool Update)
-                        let new_state_copy = state_copy.clone();
-                        for (hash, signed_transaction) in self.wrapped_mempool.lock().unwrap().hash_map.clone() {
-                            let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
-                            let amount = signed_transaction.t.value;
-                            if new_state_copy.state.contains_key(&sender) {
-                                let balance = new_state_copy.state.get(&sender).unwrap().1;
-                                if amount > balance {
-                                    self.wrapped_mempool.lock().unwrap().hash_map.remove(&hash);
-                                }
-                            }
-                            // if the sender is not in the state, remove the transaction from the mempool
-                            else {
-                                self.wrapped_mempool.lock().unwrap().hash_map.remove(&hash);
-                            }
-                        }
 
                         // After updating the mempool, proceed to insert the block
                         // If the blockchain does not already contain the block
-                        if !self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash()) && pow_passed && transaction_is_valid {
-                            println!("are we proceeeding to insert the block: {}", !self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash()) && pow_passed && transaction_is_valid);
-                            let current_blockchain = self.wrapped_blockchain.lock().unwrap();
+                        println!("does blockchain not contain the block: {}", !{self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash())});
+                        println!("does the block pass the pow test: {}", pow_passed);
+                        if !{self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash())} && pow_passed {
+                            // let current_blockchain = {self.wrapped_blockchain.lock().unwrap()};
+                            
+                            println!("stage 0");
                             // But contains the block's parent, add the block to the blockchain and remove the block's transactions from the mempool
-                            if current_blockchain.hash_map.contains_key(&block.get_parent()) {
-                                self.wrapped_blockchain.lock().unwrap().insert(&block);
-                                new_hashes.push(block.hash()); 
-                                // remove the block's transactions from the mempool after the block is added to the blockchain
-                                let transactions = block.clone().content.transactions;
-                                for signed_transaction in transactions {
-                                    if self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&signed_transaction.hash()) {
-                                        self.wrapped_mempool.lock().unwrap().hash_map.remove(&signed_transaction.hash());
+                            if self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.get_parent()) {
+                                println!("stage 1");
+                                // get the state of the blockchain tip based on the block's parent
+                                let parent = block.get_parent();
+                                let state_copy = {self.wrapped_blockchain.lock().unwrap().state_map.get(&parent).unwrap().clone()};
+                                
+                                let mut all_transactions_valid = true;
+                                // Check the block's transactions - if any transaction if invalid, skip the entire block
+                                for signed_transaction in signed_transactions {
+                                    // by first checking if transaction signature is valid
+                                    if !verify(&signed_transaction.t, &signed_transaction.signature_vector, &signed_transaction.signer_public_key) {
+                                        all_transactions_valid = false;
+                                        break;
                                     }
+                                    if Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice()) != signed_transaction.t.receiver {
+                                        all_transactions_valid = false;
+                                        break;
+                                    }
+
+                                    let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
+                                    let amount = signed_transaction.t.value;
+                                    let nonce = signed_transaction.t.account_nonce;
+                                    
+                                    println!("does the state agree with the tx {}", state_copy.state.contains_key(&sender));
+                                    // check if the state agrees with the validity of the transaction
+                                    if state_copy.state.contains_key(&sender) {
+                                        // spending check
+                                        if amount > state_copy.state.get(&sender).unwrap().1 || nonce != state_copy.state.get(&sender).unwrap().0 + 1{
+                                            all_transactions_valid = false;
+                                            break;
+                                        }
+                                    }
+                                    else {
+                                        all_transactions_valid = false;
+                                        break
+                                    }
+                                }
+                                println!("all transactions valid: {}", all_transactions_valid);
+
+                                if all_transactions_valid {
+                                    {self.wrapped_blockchain.lock().unwrap().insert(&block.clone())};
+                                    new_hashes.push(block.hash()); 
+
+                                    // remove the block's transactions from the mempool after inserting the block to the blockchain
+                                    let transactions = block.clone().content.transactions;
+                                    for signed_transaction in transactions {
+                                        if self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&signed_transaction.hash()) {
+                                            self.wrapped_mempool.lock().unwrap().hash_map.remove(&signed_transaction.hash());
+                                        }
+                                    }
+
+                                    // After inserting the block, update the mempool based on the new tip (Transaction Mempool Update)
+                                    let new_tip = {self.wrapped_blockchain.lock().unwrap().tip()};
+                                    let new_state_copy = {self.wrapped_blockchain.lock().unwrap().state_map.get(&new_tip).unwrap().clone()};
+                                    for (hash, signed_transaction) in self.wrapped_mempool.lock().unwrap().hash_map.clone() {
+                                        let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
+                                        let tx_nonce = signed_transaction.t.account_nonce;
+                                        if new_state_copy.state.contains_key(&sender) {
+                                            let nonce = new_state_copy.state.get(&sender).unwrap().0;
+                                            if tx_nonce < nonce {
+                                                self.wrapped_mempool.lock().unwrap().hash_map.remove(&hash);
+                                            }
+                                        }
+                                    }
+                                    println!("stage 3");
+                                }
+                                // if a block contains at least one invalid transaction, skip the entire block
+                                else {
+                                    continue;
                                 }
                             }
 
                             // if the new block is the parent of any block in the buffer
                             let mut parent_hash = block.hash();
                             while orphanbuffer.hash_map.contains_key(&parent_hash) {
+                                
                                 let removed_hash = parent_hash; // the hash to be removed from the buffer
                                 let selected_block = orphanbuffer.hash_map.get(&parent_hash);
                                 let selected_block_option = Option::expect(selected_block, "block not found");
-                                self.wrapped_blockchain.lock().unwrap().insert(&selected_block_option.clone()); // add the block to your blockchain
+                                {self.wrapped_blockchain.lock().unwrap().insert(&selected_block_option.clone())}; // add the block to your blockchain
                                 new_hashes.push(selected_block_option.clone().hash());
 
                                 parent_hash = selected_block_option.clone().hash(); // update the hash for next round
                                 orphanbuffer.hash_map.remove(&removed_hash); // remove the block from the buffer
                             }
+                            println!("stage 4");
                         }
                         // if the blockchain already contains the block, add the repeated block to the orphan buffer
-                        else {
+                        else if pow_passed {
                             let parent_hash = block.get_parent();
-                            orphanbuffer.hash_map.insert(block.get_parent(), block); // if the parent does not exist, add the block to the buffer
+                            orphanbuffer.hash_map.insert(parent_hash, block); // if the parent does not exist, add the block to the buffer
                             parent_vec.push(parent_hash);
                         }
                     }
+
                     if parent_vec.len() > 0 {
                         peer.write(Message::GetBlocks(parent_vec));
-                        print!("new parent vector is sent");
+                        print!(" new parent vector is sent ");
                     }
                     else {
                         print!(" there is no parent vector to get blocks ");
                     }
                     if new_hashes.len() > 0 {
                         peer.write(Message::NewBlockHashes(new_hashes));
-                        print!("new block hashes are sent");
+                        print!(" new block hashes are sent with length ");
                     }
                     else {
-                        print!("there is no new block hashes to send");
+                        print!(" there is no new block hashes to send ");
                     }
                 }
                 
                 Message::NewTransactionHashes(trans_hashes) => {
+                    println!("get transaction hashes in message newtransactionhases");
                     let mut get_hashes = Vec::<H256>::new();
                     // for all the transaction hashes in the message
                     for hash in trans_hashes {
                         // if the transaction is not in the mempool, add it to the mempool
-                        if !&self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&hash) {
+                        if !self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&hash) {
                             get_hashes.push(hash);
                         }
                     }
                     // broadcast the new transaction hashes that are newly added to the mempool
-                    peer.write(Message::GetTransactions(get_hashes));
+                    if get_hashes.len() > 0 {
+                        peer.write(Message::GetTransactions(get_hashes));
+                    }
                 }
                 Message::GetTransactions(trans_vec) => {
                     let mut transactions = Vec::new();
+                    println!("get transaction in message gettransactions");
                     
                     for hash in trans_vec {
                         if self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&hash){ 
-                            let mempool = self.wrapped_mempool.lock().unwrap();
+                            let mempool = {self.wrapped_mempool.lock().unwrap()};
                             let transaction = mempool.hash_map.get(&hash);
                             let transaction_option = Option::expect(transaction, "block not found");
                             transactions.push(transaction_option.clone());
                         } 
                     }
-
-                    peer.write(Message::Transactions(transactions));
+                    if transactions.len() > 0 {
+                        peer.write(Message::Transactions(transactions));
+                        
+                    }
                 }
                 Message::Transactions(signed_transactions) => {
-                    println!("received transactions!");
+                    println!("received transactions in message transactions");
                     let mut new_hashes = Vec::<H256>::new();
-                    let mut signature_is_valid = true;
+
                     // retrive the trasnactions of the hashes from the mempool, and check their validity
                     for signed_transaction in signed_transactions {
+                        let mut signature_is_valid = true;
+                        println!("transaction is received");
                         // first, check transaction signature validity
-                        let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
-                        if !verify(&signed_transaction.t, &signed_transaction.signature_vector, &signed_transaction.signer_public_key) {
+                        if !verify(&signed_transaction.t, &signed_transaction.signer_public_key, &signed_transaction.signature_vector) {
                             signature_is_valid = false;
                         }
-                        if sender != signed_transaction.t.receiver {
-                            signature_is_valid = false;
-                        }
+                        println!("verify {}", signature_is_valid);
 
                         // spending check
-                        let amount = signed_transaction.t.value;
-                        let nonce = signed_transaction.t.account_nonce;
-                        let state_map = &self.wrapped_blockchain.lock().unwrap().state_map;
-                        let state = state_map.get(&signed_transaction.hash()).clone();
-                        let state_option = Option::expect(state.clone(), "state not found");
-                        // if the amount is larger than the balance or the nonce is not 1 + account nonce , the transaction is invalid
-                        if amount > state_option.state.get(&sender).unwrap().1 || nonce != state_option.state.get(&sender).unwrap().0 + 1{
-                            signature_is_valid = false;
-                        }
+                        // let amount = signed_transaction.t.value;
+                        // let nonce = signed_transaction.t.account_nonce;
+                        // // if the amount is larger than the balance or the nonce is not 1 + account nonce , the transaction is invalid
+                        // if amount > state_option.state.get(&sender).unwrap().1 || nonce != state_option.state.get(&sender).unwrap().0 + 1{
+                        //     signature_is_valid = false;
+                        // }
+                        // println!("spending check {}", signature_is_valid);
 
                         // if the transaction is not in the mempool, add it to the mempool
-                        if !self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&signed_transaction.hash()) && signature_is_valid {
+                        if !{self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&signed_transaction.hash())} && signature_is_valid {
                             new_hashes.push(signed_transaction.hash());
-                            self.wrapped_mempool.lock().unwrap().hash_map.insert(signed_transaction.hash(), signed_transaction);
+                            {self.wrapped_mempool.lock().unwrap().hash_map.insert(signed_transaction.hash(), signed_transaction)};
                             println!("transaction inserted into the mempool!");
                         }
+                        else {
+                            println!("transaction already exists in the mempool!");
+                        }
                     }
-                    self.server.broadcast(Message::NewTransactionHashes(new_hashes));  
+                    println!("new_hashes length is {}", new_hashes.len());
+                    if new_hashes.len() > 0 {
+                        self.server.broadcast(Message::NewTransactionHashes(new_hashes));  
+                        println!("new transaction hashes are broadcasted ");
+                    }
                 }
             }
+            println!("end of the loop");
         }
     }
 }
@@ -361,7 +369,7 @@ fn generate_test_worker_and_start() -> (TestMsgSender, ServerTestReceiver, Vec<H
     let worker = Worker::new(1, msg_chan, &server, new_blockchain, new_mempool);
     worker.start(); 
     // generate and append the hash of the genesis block
-    let blockchain_vector = new_blockchain.lock().unwrap().all_blocks_in_longest_chain();
+    let blockchain_vector = {new_blockchain.lock().unwrap().all_blocks_in_longest_chain()};
     (test_msg_sender, server_receiver, blockchain_vector)
 }
 

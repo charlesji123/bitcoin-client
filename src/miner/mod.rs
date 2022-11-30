@@ -3,6 +3,7 @@ pub mod worker;
 use log::info;
 
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
+use smol::stream::TryNextFuture;
 use std::convert::TryInto;
 use std::time;
 
@@ -151,62 +152,40 @@ impl Context {
                 return;
             }
             
-            let parent = self.arc_mutex.lock().unwrap().tip().clone();
-            let mut state_copy = self.arc_mutex.lock().unwrap().state_map.get(&parent).unwrap().clone();
+            let tip = {self.arc_mutex.lock().unwrap().tip().clone()};
+            let state_copy = {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone()};
 
             let mut this_block_transactions= Vec::new();
             // if the block is consistent with the difficulty of the blockchain, insert the block into the blockchain
             // update the block's transactions based on the mempool before inserting into the blockchain
             let mut count = 0;
+            let mut included_senders = Vec::new();
+
+            // println!("mempool length: {}", {self.mempool.lock().unwrap().hash_map.len()});
             for (hash, transaction) in self.mempool.lock().unwrap().hash_map.clone() {
+            
                 let mut transaction_is_valid = true;
 
                 let sender = Address::from_public_key_bytes(transaction.signer_public_key.as_slice());
-                let receiver = transaction.t.receiver;
+                // println!("do we already include the same sender: {}", included_senders.contains(&sender));
+                if included_senders.contains(&sender) {
+                    continue;
+                }
                 let tx_amount = transaction.t.value;
                 let tx_nonce = transaction.t.account_nonce;
                 // update the state and append the transaction if the transaction is valid
                 if state_copy.state.contains_key(&sender) {
-                    println!("sender is in state, miner loop");
-                    // spending check
                     if tx_amount > state_copy.state.get(&sender).unwrap().1 || tx_nonce != state_copy.state.get(&sender).unwrap().0 + 1{
                         transaction_is_valid = false;
-                    }
-                    // transaction signature check skipped because sender's address is not included in Transaction
-                    // if it agrees, update the state of the sender
-                    else {
-                        let mut nonce = state_copy.state.get(&sender).unwrap().0;
-                        let mut balance = state_copy.state.get(&sender).unwrap().1;
-                        nonce = nonce + 1;
-                        balance = balance - tx_amount;
-
-                        state_copy.state.insert(sender, (nonce, balance));
-                        println!("passed the spending check, and sender state updated");
                     }
                 }
                 else {
                     transaction_is_valid = false;
                 }
-                
-                // then update the state of the receiver 
-                if state_copy.state.contains_key(&receiver) && transaction_is_valid {
-                    let mut nonce = state_copy.state.get(&receiver).unwrap().0;
-                    let mut balance = state_copy.state.get(&receiver).unwrap().1;
-                    nonce += 1;
-                    balance += tx_amount;
-                    state_copy.state.insert(receiver, (nonce, balance));
-                    println!("receiver state updated, miner loop");
-                } 
-                // create a new entry for the receiver if it does not exist
-                else {
-                    let new_receiver = receiver;
-                    let nonce = 0;
-                    let balance = tx_amount;
-                    state_copy.state.insert(new_receiver, (nonce, balance));
-                    println!("new receiver state created, miner loop");
-                }
+            
                 // only append transaction if it is valid
                 if transaction_is_valid {
+                    included_senders.push(sender);
                     this_block_transactions.push(transaction);
                     count += 1;
                     if count >= 16 {
@@ -214,10 +193,12 @@ impl Context {
                     }
                 } 
             }                    
+            // println!("# transaction for this block is: {}",count);
 
             // After initializing the transactions, initialize timestap, difficulty, content, merkle root, and nonce
+            let parent = tip;
             let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-            let difficulty = self.arc_mutex.lock().unwrap().hash_map.get(&parent).unwrap().header.difficulty;
+            let difficulty = {self.arc_mutex.lock().unwrap().hash_map.get(&parent).unwrap().get_difficulty()};
 
             let merkle_tree = MerkleTree::new(&this_block_transactions);
             let merkle_root = merkle_tree.root(); // hash of the block is the hash of the merkle root
@@ -225,13 +206,15 @@ impl Context {
             let mut rng = rand::thread_rng();
             let nonce: usize = rng.gen();
 
+            let length = {self.arc_mutex.lock().unwrap().hash_map.get(&parent).unwrap().header.length + 1};
+
             let header = Header {
                 parent,
                 nonce,
                 difficulty,
                 timestamp,
                 merkle_root,
-                length: 0,
+                length,
             };
 
             let content = Content {
@@ -239,39 +222,42 @@ impl Context {
             };
             
             let block = Block {header, content};
+            
 
-            if block.hash() <= difficulty {
-                print!(" block hash is {} ", block.hash());
+            if block.hash() <= difficulty && count > 0 {            
+                println!(" is block's parent same as tip? {}", block.get_parent() == {self.arc_mutex.lock().unwrap().tip().clone()});
+
                 // only remove the transactions from the mempool after the block is passed through
                 for transactions in block.content.transactions.clone() {
-                    self.mempool.lock().unwrap().hash_map.remove(&transactions.hash());
+                    {self.mempool.lock().unwrap().hash_map.remove(&transactions.hash())};
                 }
 
-                self.arc_mutex.lock().unwrap().insert(&block); 
-                self.arc_mutex.lock().unwrap().state_map.insert(block.hash(), state_copy);
+                {self.arc_mutex.lock().unwrap().insert(&block)}; 
+                println!(" new block inserted");
+
                 self.finished_block_chan.send(block.clone()).expect("Send finished block error");
 
                 // After successful block insertion, state changes, so implement Transaction Mempool Update to purify the mempool
-                let tip = self.arc_mutex.lock().unwrap().tip().clone();
-                println!("length of the blockchain's state hashmap is is {}", self.arc_mutex.lock().unwrap().state_map.len());
-                print!(" number of accounts in the tip's state is {} ", self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().state.len());
-                if self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().state.len() > 0 {
-                    let state_copy = self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone();
-                    for (hash, signed_transaction) in self.mempool.lock().unwrap().hash_map.clone() {
-                        let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
-                        let amount = signed_transaction.t.value;
-                        // remove the tx if the sender's balance is less than the amount
-                        if state_copy.state.contains_key(&sender) {
-                            if amount > state_copy.state.get(&sender).unwrap().1 {
-                                self.mempool.lock().unwrap().hash_map.remove(&hash);
-                            }
-                        }
-                        // or if the state map does not contain the sender
-                        else {
-                            self.mempool.lock().unwrap().hash_map.remove(&hash);
-                        }
-                    }
-                }
+                // let tip = {self.arc_mutex.lock().unwrap().tip().clone()};
+                // println!("length of the blockchain's state hashmap is {}", {self.arc_mutex.lock().unwrap().state_map.len()});
+                // print!(" number of accounts in the tip's state is {} ", {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().state.len()});
+                // if {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().state.len()} > 0 {
+                //     let state_copy = {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone()};
+                //     for (hash, signed_transaction) in {self.mempool.lock().unwrap().hash_map.clone()} {
+                //         let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
+                //         let amount = signed_transaction.t.value;
+                //         // remove the tx if the sender's balance is less than the amount
+                //         if state_copy.state.contains_key(&sender) {
+                //             if amount > state_copy.state.get(&sender).unwrap().1 {
+                //                 self.mempool.lock().unwrap().hash_map.remove(&hash);
+                //             }
+                //         }
+                //         // or if the state map does not contain the sender
+                //         else {
+                //             self.mempool.lock().unwrap().hash_map.remove(&hash);
+                //         }
+                //     }
+                // }
             }
 
             if let OperatingState::Run(i) = self.operating_state {

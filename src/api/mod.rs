@@ -137,18 +137,16 @@ impl Server {
                             respond_result!(req, true, "ok");
                         }
                         "/blockchain/longest-chain" => {
-                            let unwrapped_blockchain = blockchain.lock().unwrap();
-                            print!("{}", unwrapped_blockchain.tip().to_string());
-                            let v = unwrapped_blockchain.all_blocks_in_longest_chain();
+                            // let unwrapped_blockchain = blockchain.lock().unwrap();
+                            print!("longest chain length {}", {blockchain.lock().unwrap().all_blocks_in_longest_chain().len()});
+                            let v = {blockchain.lock().unwrap().all_blocks_in_longest_chain()};
                             let v_string: Vec<String> = v.into_iter().map(|h|h.to_string()).collect();
                             respond_json!(req, v_string);
                         }
                         "/blockchain/longest-chain-tx" => {
                             // get the transaction hashes of all the blocks in the longest chain
-                            let blockchain = blockchain.lock().unwrap();
-                            print!("fine!");
-                            let longest_chain_tx = blockchain.all_tx_in_longest_chain();
-                            print!("{}", longest_chain_tx.len());
+                            let longest_chain_tx = {blockchain.lock().unwrap().all_tx_in_longest_chain()};
+                            print!("longest chain tx length {}", longest_chain_tx.len());
                             let mut all_txs = Vec::new();
                             for n in 0..longest_chain_tx.len(){
                                 let block_tx = longest_chain_tx[n].clone();
@@ -178,17 +176,18 @@ impl Server {
                                     return;
                                 }
                             };
-                            let unwrapped_blockchain = blockchain.lock().unwrap();
+                            // let unwrapped_blockchain = blockchain.lock().unwrap();
                             let mut index = 0;
-                            let mut block_hash = unwrapped_blockchain.tip();
-                            for block in unwrapped_blockchain.all_blocks_in_longest_chain() {
-                                index += 1;
+                            let mut block_hash = {blockchain.lock().unwrap().tip()};
+                            for hash in blockchain.lock().unwrap().all_blocks_in_longest_chain() {
                                 if index == lambda {
-                                    block_hash = block.hash();
+                                    block_hash = hash;
                                     break;
                                 }
+                                index += 1;
+                                println!("block hash in block api: {}", hash);
                             }
-                            let state = unwrapped_blockchain.state_map.get(&block_hash).unwrap().clone();
+                            let state = {blockchain.lock().unwrap().state_map.get(&block_hash).unwrap().clone()};
                             let mut all_addresses = Vec::new();
                             for (address, (nonce, balance)) in state.state {
                                 all_addresses.push((address, nonce, balance));

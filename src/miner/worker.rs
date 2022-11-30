@@ -44,10 +44,7 @@ impl Worker {
     fn worker_loop(&self) {
         loop {
             let _block = self.finished_block_chan.recv().expect("Receive finished block error");
-            // insert the block into the blockchain
-            self.blockchain.lock().unwrap().insert(&_block);
-
-            // broadcast the block hash after insert the block
+            // broadcast the block hash
             let _block_hash = _block.hash();
             let block_vector = vec![_block_hash];
             self.server.broadcast(NewBlockHashes(block_vector));

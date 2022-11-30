@@ -163,14 +163,13 @@ impl Context {
                 self.key_pairs.push(key_pair::random());
                 // update the state to create a new account for this new key pair
                 let new_address = Address::from_public_key_bytes(self.key_pairs[self.key_pairs.len() - 1].public_key().as_ref().to_vec().as_slice());
-                // self.arc_mutex.lock().unwrap().state_map.get_mut(&self.arc_mutex.lock().unwrap().tip()).unwrap().state.insert(new_address, (0, 0));
-                println!("new sender address generated {}", new_address);
+                // instead of inserting it to the state here, set it as the recipient of the transaction for it to be inserted in network worker
+                println!("new key pair generated {}", new_address);
             }
-            println!("this stage 1");
-
+            
             // pick a random recipent address from the state
-            let tip = self.arc_mutex.lock().unwrap().tip();
-            let all_accounts = self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone();
+            let tip = {self.arc_mutex.lock().unwrap().tip()};
+            let all_accounts = {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone()};
             let mut receiver = all_accounts.state.keys().nth(rand::random::<usize>() % all_accounts.state.len()).unwrap().clone();
 
             // if a new key pair was generated, set it as the recipient address for this transaction
@@ -178,64 +177,44 @@ impl Context {
                 receiver = Address::from_public_key_bytes(self.key_pairs[self.key_pairs.len() - 1].public_key().as_ref().to_vec().as_slice()).clone();
             }
             // pick a random key pair as the sender
-            let mut sender_index = rand::random::<usize>() % self.key_pairs.len();
+            let mut sender_index = rand::thread_rng().gen_range(0..self.key_pairs.len());
             // if a new key pair was generated, avoid assigning it as the sender
             if probability {
-                sender_index = rand::random::<usize>() % self.key_pairs.len()-1;
+                // sender_index = rand::random::<usize>() % self.key_pairs.len()-1;
+                sender_index = rand::thread_rng().gen_range(0..self.key_pairs.len()-1);
             }
-            println!("this stage 2");
 
-            // generate a new transaction
-            let account_nonce = all_accounts.state.get(&receiver).unwrap().0 + 1;
+            // only pick a sender that has a balance greater than 0 and is contained in the state
             let sender = Address::from_public_key_bytes(self.key_pairs[sender_index].public_key().as_ref().to_vec().as_slice()).clone();
-            let value = rand::random::<usize>() % all_accounts.state.get(&sender).unwrap().1;
-            let new_transaction = Transaction {
-                receiver,
-                value,
-                account_nonce,
-            };
-            println!("this stage 3");
-
-            let signature_vector = crate::types::transaction::sign(&new_transaction, &self.key_pairs[sender_index]);
-            let signed_transaction = SignedTransaction {
-                t: new_transaction,
-                signature_vector: signature_vector.as_ref().to_vec(),
-                signer_public_key: self.key_pairs[sender_index].public_key().as_ref().to_vec(),
-            };
-            let signed_hash = signed_transaction.hash();
-            println!("new signed transaction generated with signed hash: {}", signed_hash);
-
-            let signed_transaction_clone = signed_transaction.clone();
-
-            // check if the state agrees with the transaction
-            let mut transaction_valid = true;
-            // let blockchain_preclone = self.arc_mutex.lock().unwrap();
-            // let state_copy_preclone = blockchain_preclone.state_map.get(&self.arc_mutex.lock().unwrap().tip()).unwrap();
-            // let state_copy = (*state_copy_preclone).clone();
-            // drop(state_copy_preclone);
-            // drop(blockchain_preclone);
-            let state_copy = self.arc_mutex.lock().unwrap().state_map.get(&self.arc_mutex.lock().unwrap().tip()).unwrap().clone();
-            let signer_address = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
-            let balance = state_copy.state.get(&signer_address).unwrap().1;
-            let nonce = state_copy.state.get(&signer_address).unwrap().0;
-
-            if signed_transaction.t.account_nonce != nonce + 1 || signed_transaction.t.value > balance {
-                transaction_valid = false;
-            }
-            else {
-                println!("the newly generated transaction passes the state check");
-            }
-
-            // if the state agrees
-            if transaction_valid {
-            // add the transaction to mempool and pass it on to the worker for broadcasting
-                self.mempool.lock().unwrap().hash_map.insert(signed_hash, signed_transaction);
+            if all_accounts.state.contains_key(&sender) && all_accounts.state.get(&sender).unwrap().1 > 0{
+                // println!("sender address {}", sender);
+                // println!("state length {}", all_accounts.state.len());
+                // println!("state contains sender {}", all_accounts.state.contains_key(&sender));
+    
+                let account_nonce = {all_accounts.state.get(&sender).unwrap().0 + 1};
+                let value = {rand::thread_rng().gen_range(0..all_accounts.state.get(&sender).unwrap().1)};
+                let new_transaction = Transaction {
+                    receiver,
+                    value,
+                    account_nonce,
+                };
+    
+                let signature_vector = crate::types::transaction::sign(&new_transaction, &self.key_pairs[sender_index]);
+                let signed_transaction = SignedTransaction {
+                    t: new_transaction,
+                    signature_vector: signature_vector.as_ref().to_vec(),
+                    signer_public_key: self.key_pairs[sender_index].public_key().as_ref().to_vec(),
+                };
+                let signed_hash = signed_transaction.hash();
+    
+                let signed_transaction_clone = signed_transaction.clone();
+    
+                // add the transaction to mempool and pass it on to the worker for broadcasting
+                {self.mempool.lock().unwrap().hash_map.insert(signed_hash, signed_transaction)};
                 self.finished_tx_chan.send(signed_transaction_clone).unwrap();
                 print!("new transaction generated: {}", signed_hash);
             }
-            else {
-                print!("invalid transaction generated: {}", signed_hash);
-            }
+   
 
             if let OperatingState::Run(i) = self.operating_state {
                 if i != 0 {

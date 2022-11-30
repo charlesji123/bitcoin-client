@@ -94,7 +94,8 @@ pub fn generate_genesis_block(parent: &H256) -> Block {
     let data: [H256; 0] = [];
     let merkle_tree = MerkleTree::new(&data);
     let merkle_root = merkle_tree.root();
-    let difficulty = hex!("000effffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").into(); // set maximum difficulty
+    let difficulty = hex!("000effffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").into(); // set difficulty
+    // let difficulty = [255u8; 32].into(); // set maximum difficulty
     let timestamp: u128 = 0;
     let nonce: usize = 0;
   

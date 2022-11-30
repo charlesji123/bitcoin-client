@@ -47,7 +47,7 @@ impl Worker {
         loop {
             let _transaction = self.finished_tx_chan.recv().expect("Receive finished transaction error");
             let _transaction_hash = _transaction.hash();
-            self.mempool.lock().unwrap().hash_map.insert(_transaction.hash(), _transaction);
+            {self.mempool.lock().unwrap().hash_map.insert(_transaction.hash(), _transaction)};
 
             // broadcast the hashes of the transactions after insert the transaction
             let tx_vector = vec![_transaction_hash];
