@@ -139,12 +139,9 @@ impl Worker {
                         println!("does blockchain not contain the block: {}", !{self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash())});
                         println!("does the block pass the pow test: {}", pow_passed);
                         if !{self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash())} && pow_passed {
-                            // let current_blockchain = {self.wrapped_blockchain.lock().unwrap()};
                             
-                            println!("stage 0");
                             // But contains the block's parent, add the block to the blockchain and remove the block's transactions from the mempool
                             if self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.get_parent()) {
-                                println!("stage 1");
                                 // get the state of the blockchain tip based on the block's parent
                                 let parent = block.get_parent();
                                 let state_copy = {self.wrapped_blockchain.lock().unwrap().state_map.get(&parent).unwrap().clone()};
@@ -153,11 +150,7 @@ impl Worker {
                                 // Check the block's transactions - if any transaction if invalid, skip the entire block
                                 for signed_transaction in signed_transactions {
                                     // by first checking if transaction signature is valid
-                                    if !verify(&signed_transaction.t, &signed_transaction.signature_vector, &signed_transaction.signer_public_key) {
-                                        all_transactions_valid = false;
-                                        break;
-                                    }
-                                    if Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice()) != signed_transaction.t.receiver {
+                                    if !verify(&signed_transaction.t, &signed_transaction.signer_public_key, &signed_transaction.signature_vector) {
                                         all_transactions_valid = false;
                                         break;
                                     }
@@ -166,7 +159,6 @@ impl Worker {
                                     let amount = signed_transaction.t.value;
                                     let nonce = signed_transaction.t.account_nonce;
                                     
-                                    println!("does the state agree with the tx {}", state_copy.state.contains_key(&sender));
                                     // check if the state agrees with the validity of the transaction
                                     if state_copy.state.contains_key(&sender) {
                                         // spending check
@@ -207,7 +199,6 @@ impl Worker {
                                             }
                                         }
                                     }
-                                    println!("stage 3");
                                 }
                                 // if a block contains at least one invalid transaction, skip the entire block
                                 else {
@@ -228,7 +219,6 @@ impl Worker {
                                 parent_hash = selected_block_option.clone().hash(); // update the hash for next round
                                 orphanbuffer.hash_map.remove(&removed_hash); // remove the block from the buffer
                             }
-                            println!("stage 4");
                         }
                         // if the blockchain already contains the block, add the repeated block to the orphan buffer
                         else if pow_passed {
@@ -300,15 +290,6 @@ impl Worker {
                         }
                         println!("verify {}", signature_is_valid);
 
-                        // spending check
-                        // let amount = signed_transaction.t.value;
-                        // let nonce = signed_transaction.t.account_nonce;
-                        // // if the amount is larger than the balance or the nonce is not 1 + account nonce , the transaction is invalid
-                        // if amount > state_option.state.get(&sender).unwrap().1 || nonce != state_option.state.get(&sender).unwrap().0 + 1{
-                        //     signature_is_valid = false;
-                        // }
-                        // println!("spending check {}", signature_is_valid);
-
                         // if the transaction is not in the mempool, add it to the mempool
                         if !{self.wrapped_mempool.lock().unwrap().hash_map.contains_key(&signed_transaction.hash())} && signature_is_valid {
                             new_hashes.push(signed_transaction.hash());
@@ -319,14 +300,12 @@ impl Worker {
                             println!("transaction already exists in the mempool!");
                         }
                     }
-                    println!("new_hashes length is {}", new_hashes.len());
                     if new_hashes.len() > 0 {
                         self.server.broadcast(Message::NewTransactionHashes(new_hashes));  
                         println!("new transaction hashes are broadcasted ");
                     }
                 }
             }
-            println!("end of the loop");
         }
     }
 }
