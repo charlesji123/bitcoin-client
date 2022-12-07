@@ -154,7 +154,6 @@ impl Context {
             if let OperatingState::ShutDown = self.operating_state {
                 return;
             }
-            println!("txgen is running");
 
             // dynamically generate sender addresses by setting the probability of creating a new keypair as 0.5
             let probability = rand::random::<bool>();
@@ -164,11 +163,13 @@ impl Context {
                 // update the state to create a new account for this new key pair
                 let new_address = Address::from_public_key_bytes(self.key_pairs[self.key_pairs.len() - 1].public_key().as_ref().to_vec().as_slice());
                 // instead of inserting it to the state here, set it as the recipient of the transaction for it to be inserted in network worker
-                println!("new key pair generated {}", new_address);
+                // println!("new key pair generated {}", new_address);
             }
             
             // pick a random recipent address from the state
+            println!("calling lock in txgen 1");
             let tip = {self.arc_mutex.lock().unwrap().tip()};
+            println!("calling lock in txgen 2");
             let all_accounts = {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone()};
             let mut receiver = all_accounts.state.keys().nth(rand::random::<usize>() % all_accounts.state.len()).unwrap().clone();
 
@@ -187,10 +188,7 @@ impl Context {
             // only pick a sender that has a balance greater than 0 and is contained in the state
             let sender = Address::from_public_key_bytes(self.key_pairs[sender_index].public_key().as_ref().to_vec().as_slice()).clone();
             if all_accounts.state.contains_key(&sender) && all_accounts.state.get(&sender).unwrap().1 > 0{
-                // println!("sender address {}", sender);
-                // println!("state length {}", all_accounts.state.len());
-                // println!("state contains sender {}", all_accounts.state.contains_key(&sender));
-    
+
                 let account_nonce = {all_accounts.state.get(&sender).unwrap().0 + 1};
                 let value = {rand::thread_rng().gen_range(0..all_accounts.state.get(&sender).unwrap().1)};
                 let new_transaction = Transaction {
@@ -210,6 +208,7 @@ impl Context {
                 let signed_transaction_clone = signed_transaction.clone();
     
                 // add the transaction to mempool and pass it on to the worker for broadcasting
+                println!("calling lock in txgen 3");
                 {self.mempool.lock().unwrap().hash_map.insert(signed_hash, signed_transaction)};
                 self.finished_tx_chan.send(signed_transaction_clone).unwrap();
                 print!("new transaction generated: {}", signed_hash);

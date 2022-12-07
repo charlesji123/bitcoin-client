@@ -137,7 +137,6 @@ impl Server {
                             respond_result!(req, true, "ok");
                         }
                         "/blockchain/longest-chain" => {
-                            // let unwrapped_blockchain = blockchain.lock().unwrap();
                             print!("longest chain length {}", {blockchain.lock().unwrap().all_blocks_in_longest_chain().len()});
                             let v = {blockchain.lock().unwrap().all_blocks_in_longest_chain()};
                             let v_string: Vec<String> = v.into_iter().map(|h|h.to_string()).collect();
@@ -176,7 +175,6 @@ impl Server {
                                     return;
                                 }
                             };
-                            // let unwrapped_blockchain = blockchain.lock().unwrap();
                             let mut index = 0;
                             let mut block_hash = {blockchain.lock().unwrap().tip()};
                             for hash in blockchain.lock().unwrap().all_blocks_in_longest_chain() {

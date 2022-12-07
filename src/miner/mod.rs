@@ -151,7 +151,6 @@ impl Context {
             if let OperatingState::ShutDown = self.operating_state {
                 return;
             }
-            
             let tip = {self.arc_mutex.lock().unwrap().tip().clone()};
             let state_copy = {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone()};
 
@@ -225,11 +224,12 @@ impl Context {
             
 
             if block.hash() <= difficulty && count > 0 {            
-                println!(" is block's parent same as tip? {}", block.get_parent() == {self.arc_mutex.lock().unwrap().tip().clone()});
-
+                // println!(" is block's parent same as tip? {}", block.get_parent() == {self.arc_mutex.lock().unwrap().tip().clone()});
+                println!("new block passing difficulty check with transaction length {}", block.content.transactions.len());
                 // only remove the transactions from the mempool after the block is passed through
-                for transactions in block.content.transactions.clone() {
-                    {self.mempool.lock().unwrap().hash_map.remove(&transactions.hash())};
+                for transaction in block.content.transactions.clone() {
+                    println!("calling lock in miner 6");
+                    {self.mempool.lock().unwrap().hash_map.remove(&transaction.hash())};
                 }
 
                 {self.arc_mutex.lock().unwrap().insert(&block)}; 
