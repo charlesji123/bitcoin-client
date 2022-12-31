@@ -99,7 +99,6 @@ fn main() {
     );
     worker_ctx.start();
 
-    print!("starting txgen from main");
     // start the transaction generator
     let (tx_ctx, tx, finished_tx_chan) = txgen::new(&blockchain, &mempool, seed);
     let tx_worker_ctx = txgen::worker::Worker::new(&server, finished_tx_chan, &blockchain, &mempool);

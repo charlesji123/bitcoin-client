@@ -48,13 +48,11 @@ pub struct Handle {
 }
 
 pub fn new(blockchain: &Arc<Mutex<Blockchain>>, mempool: &Arc<Mutex<Mempool>>, seed: u8) -> (Context, Handle, Receiver<SignedTransaction>) {
-    println!("creating a new txgen");
     let (signal_chan_sender, signal_chan_receiver) = unbounded();
     let (finished_tx_sender, finished_tx_receiver) = unbounded();
     let mut key_pairs = Vec::new();
     let genesis_keypair = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
     key_pairs.push(genesis_keypair); // initialize the key pairs to genesis hash
-    println!("genesis address generated");
 
     let ctx = Context {
         arc_mutex: Arc::clone(blockchain),
@@ -115,11 +113,11 @@ impl Context {
                     let signal = self.control_chan.recv().unwrap();
                     match signal {
                         ControlSignal::Exit => {
-                            info!("Miner shutting down");
+                            info!("Txgen shutting down");
                             self.operating_state = OperatingState::ShutDown;
                         }
                         ControlSignal::Start(i) => {
-                            info!("Miner starting in continuous mode with theta {}", i);
+                            info!("Txgen starting in continuous mode with theta {}", i);
                             self.operating_state = OperatingState::Run(i);
                         }
                         ControlSignal::Update => {
@@ -160,16 +158,10 @@ impl Context {
             if probability {
                 // insert the new key pair into the key pairs controlled by this node
                 self.key_pairs.push(key_pair::random());
-                // update the state to create a new account for this new key pair
-                let new_address = Address::from_public_key_bytes(self.key_pairs[self.key_pairs.len() - 1].public_key().as_ref().to_vec().as_slice());
-                // instead of inserting it to the state here, set it as the recipient of the transaction for it to be inserted in network worker
-                // println!("new key pair generated {}", new_address);
             }
             
             // pick a random recipent address from the state
-            println!("calling lock in txgen 1");
             let tip = {self.arc_mutex.lock().unwrap().tip()};
-            println!("calling lock in txgen 2");
             let all_accounts = {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone()};
             let mut receiver = all_accounts.state.keys().nth(rand::random::<usize>() % all_accounts.state.len()).unwrap().clone();
 
@@ -208,10 +200,8 @@ impl Context {
                 let signed_transaction_clone = signed_transaction.clone();
     
                 // add the transaction to mempool and pass it on to the worker for broadcasting
-                println!("calling lock in txgen 3");
                 {self.mempool.lock().unwrap().hash_map.insert(signed_hash, signed_transaction)};
                 self.finished_tx_chan.send(signed_transaction_clone).unwrap();
-                print!("new transaction generated: {}", signed_hash);
             }
    
 

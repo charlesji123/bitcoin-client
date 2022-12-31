@@ -39,7 +39,6 @@ impl Worker {
                 self.tx_loop();
             })
             .unwrap();
-        println!("txgen worker started");
         info!("tx generator initialized into paused mode");
     }
 
@@ -53,7 +52,6 @@ impl Worker {
             let tx_vector = vec![_transaction_hash];
             if tx_vector.len() > 0 {
                 self.server.broadcast(Message::NewTransactionHashes(tx_vector));
-                print!("broadcast the hashes of the transactions after insert the transaction");
             }
         }
     }

@@ -3,25 +3,17 @@ pub mod worker;
 use log::info;
 
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
-use smol::stream::TryNextFuture;
-use std::convert::TryInto;
 use std::time;
 
 use std::thread;
-
-use crate::network;
-use crate::network::message::Message;
 use crate::types::address::Address;
 use crate::types::block::{Block, Header, Content};
 use crate::blockchain::{Blockchain, Mempool};
 use crate::types::hash::Hashable;
-use crate::types::transaction::SignedTransaction;
-use crate::types::transaction::Transaction;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::types::merkle::MerkleTree;
 use rand::Rng;
-use crate::network::server::Handle as ServerHandle;
 
 enum ControlSignal {
     Start(u64), // the number controls the lambda of interval between block generation
@@ -66,7 +58,7 @@ pub fn new(blockchain: &Arc<Mutex<Blockchain>>, mempool: &Arc<Mutex<Mempool>>) -
         control_chan: signal_chan_sender,
     };
 
-    (ctx, handle, finished_block_receiver) // this handle can be used either for miner or transaction
+    (ctx, handle, finished_block_receiver) 
 }
 
 #[cfg(any(test,test_utilities))]
@@ -160,13 +152,11 @@ impl Context {
             let mut count = 0;
             let mut included_senders = Vec::new();
 
-            // println!("mempool length: {}", {self.mempool.lock().unwrap().hash_map.len()});
             for (hash, transaction) in self.mempool.lock().unwrap().hash_map.clone() {
             
                 let mut transaction_is_valid = true;
 
                 let sender = Address::from_public_key_bytes(transaction.signer_public_key.as_slice());
-                // println!("do we already include the same sender: {}", included_senders.contains(&sender));
                 if included_senders.contains(&sender) {
                     continue;
                 }
@@ -192,7 +182,6 @@ impl Context {
                     }
                 } 
             }                    
-            // println!("# transaction for this block is: {}",count);
 
             // After initializing the transactions, initialize timestap, difficulty, content, merkle root, and nonce
             let parent = tip;
@@ -224,7 +213,6 @@ impl Context {
             
 
             if block.hash() <= difficulty && count > 0 {            
-                // println!(" is block's parent same as tip? {}", block.get_parent() == {self.arc_mutex.lock().unwrap().tip().clone()});
                 println!("new block passing difficulty check with transaction length {}", block.content.transactions.len());
                 // only remove the transactions from the mempool after the block is passed through
                 for transaction in block.content.transactions.clone() {
@@ -237,27 +225,6 @@ impl Context {
 
                 self.finished_block_chan.send(block.clone()).expect("Send finished block error");
 
-                // After successful block insertion, state changes, so implement Transaction Mempool Update to purify the mempool
-                // let tip = {self.arc_mutex.lock().unwrap().tip().clone()};
-                // println!("length of the blockchain's state hashmap is {}", {self.arc_mutex.lock().unwrap().state_map.len()});
-                // print!(" number of accounts in the tip's state is {} ", {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().state.len()});
-                // if {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().state.len()} > 0 {
-                //     let state_copy = {self.arc_mutex.lock().unwrap().state_map.get(&tip).unwrap().clone()};
-                //     for (hash, signed_transaction) in {self.mempool.lock().unwrap().hash_map.clone()} {
-                //         let sender = Address::from_public_key_bytes(signed_transaction.signer_public_key.as_slice());
-                //         let amount = signed_transaction.t.value;
-                //         // remove the tx if the sender's balance is less than the amount
-                //         if state_copy.state.contains_key(&sender) {
-                //             if amount > state_copy.state.get(&sender).unwrap().1 {
-                //                 self.mempool.lock().unwrap().hash_map.remove(&hash);
-                //             }
-                //         }
-                //         // or if the state map does not contain the sender
-                //         else {
-                //             self.mempool.lock().unwrap().hash_map.remove(&hash);
-                //         }
-                //     }
-                // }
             }
 
             if let OperatingState::Run(i) = self.operating_state {

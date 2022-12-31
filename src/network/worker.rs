@@ -68,7 +68,6 @@ impl Worker {
         
         loop {
             let result = smol::block_on(self.msg_chan.recv());
-            println!("result: {:?} ", result);
             if let Err(e) = result {
                 error!("network worker terminated {}", e);
                 break;
@@ -77,7 +76,6 @@ impl Worker {
             let msg = result.unwrap();
             let (msg, mut peer) = msg;
             let msg: Message = bincode::deserialize(&msg).unwrap();
-            println!("msg: {:?}", msg);
             match msg {
                 Message::Ping(nonce) => {
                     debug!("Ping: {}", nonce);
@@ -87,38 +85,28 @@ impl Worker {
                     debug!("Pong: {}", nonce);
                 }
                 Message::NewBlockHashes(hashvec) => {
-                    println!("newblockhashes msg with length hashvec: {}", hashvec.len());
                     let mut new_hashes = Vec::<H256>::new();
                     {
                         let blockchain = self.wrapped_blockchain.lock().unwrap();
                         for hash in hashvec {
-                            print!(" this hash is {} ", hash);
                             // println!(" does blockchain contain this hash: {}", {self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&hash)});
                             if !blockchain.hash_map.contains_key(&hash) {
                                 new_hashes.push(hash);
                             }
                         }
                     }
-                    println!("new_hashes length: {:?}", new_hashes.len());
                     if new_hashes.len() > 0 {
                         peer.write(Message::GetBlocks(new_hashes));
-                        println!("sent getblocks msg");
                     }
                 }
                 Message::GetBlocks(hashvec) => {
-                    println!("Getblocks msg");
                     let mut blocks = Vec::new();
                     {
                         let blockchain = self.wrapped_blockchain.lock().unwrap();
                         for hash in hashvec {
-                            println!("hash received in GetBlocks Message: {}", hash);
                             if blockchain.hash_map.contains_key(&hash){ 
-                                // let local_blockchain = {self.wrapped_blockchain.lock().unwrap()};
-                                // let block_response = {local_blockchain.hash_map.get(&hash)};
-                                // let block_option = Option::expect(block_response, "block not found");
                                 let block_response = blockchain.hash_map.get(&hash).unwrap().clone();
                                 blocks.push(block_response.clone());
-                                println!(" block hash of blocks sent in GetBlocks: {}", block_response.hash());
                             } 
                         }
                     }
@@ -128,12 +116,10 @@ impl Worker {
                 }
 
                 Message::Blocks(blockvec) => {
-                    println!("Blocks in message blocks {:?}", blockvec);
                     let mut new_hashes = Vec::<H256>::new();
                     let mut parent_vec = Vec::new();
                     // Check the block before inserting the block into blockchain
                     for block in blockvec {
-                        // println!("does blockchain contain the parent in network {}", {self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.get_parent())});
                         // Check if the block passed POW difficulty check
                         let pow_passed = block.hash() <= block.get_difficulty();
                         
@@ -143,8 +129,6 @@ impl Worker {
 
                         // After updating the mempool, proceed to insert the block
                         // If the blockchain does not already contain the block
-                        // println!("does blockchain not contain the block: {}", !{self.wrapped_blockchain.lock().unwrap().hash_map.contains_key(&block.hash())});
-                        println!("does the block pass the pow test: {}", pow_passed);
                         {
                             let mut blockchain = self.wrapped_blockchain.lock().unwrap();
                             if !blockchain.hash_map.contains_key(&block.hash()) && pow_passed {
@@ -181,7 +165,6 @@ impl Worker {
                                             break;
                                         }
                                     }
-                                    println!("all transactions valid: {}", all_transactions_valid);
 
                                     if all_transactions_valid {
                                         blockchain.insert(&block.clone());
@@ -243,14 +226,12 @@ impl Worker {
 
                     if parent_vec.len() > 0 {
                         peer.write(Message::GetBlocks(parent_vec));
-                        print!(" new parent vector is sent ");
                     }
                     else {
                         print!(" there is no parent vector to get blocks ");
                     }
                     if new_hashes.len() > 0 {
                         self.server.broadcast(Message::NewBlockHashes(new_hashes));
-                        print!(" new block hashes are sent with length ");
                     }
                     else {
                         print!(" there is no new block hashes to send ");
@@ -258,7 +239,6 @@ impl Worker {
                 }
                 
                 Message::NewTransactionHashes(trans_hashes) => {
-                    println!("get transaction hashes in message newtransactionhashes with length {}", trans_hashes.len());
                     let mut get_hashes = Vec::<H256>::new();
                     // for all the transaction hashes in the message
                     {
@@ -276,7 +256,6 @@ impl Worker {
                 }
                 Message::GetTransactions(trans_vec) => {
                     let mut transactions = Vec::new();
-                    println!("get transaction in message gettransactions");
                     {
                         let mempool = self.wrapped_mempool.lock().unwrap();
                         for hash in trans_vec {
@@ -291,18 +270,15 @@ impl Worker {
                     }
                 }
                 Message::Transactions(signed_transactions) => {
-                    println!("received transactions in message transactions");
                     let mut new_hashes = Vec::<H256>::new();
 
                     // retrive the trasnactions of the hashes from the mempool, and check their validity
                     for signed_transaction in signed_transactions {
                         let mut signature_is_valid = true;
-                        println!("transaction is received");
                         // first, check transaction signature validity
                         if !verify(&signed_transaction.t, &signed_transaction.signer_public_key, &signed_transaction.signature_vector) {
                             signature_is_valid = false;
                         }
-                        println!("verify {}", signature_is_valid);
 
                         // if the transaction is not in the mempool, add it to the mempool
                         {
@@ -310,7 +286,6 @@ impl Worker {
                             if !mempool.hash_map.contains_key(&signed_transaction.hash()) && signature_is_valid {
                                 new_hashes.push(signed_transaction.hash());
                                 mempool.hash_map.insert(signed_transaction.hash(), signed_transaction);
-                                println!("transaction inserted into the mempool!");    
                             }
                             else {
                                 println!("transaction already exists in the mempool!");
@@ -319,13 +294,10 @@ impl Worker {
                     }
                     if new_hashes.len() > 0 {
                         self.server.broadcast(Message::NewTransactionHashes(new_hashes));  
-                        println!("new transaction hashes are broadcasted ");
                     }
                 }
             }
-            println!("end of message loop");
         }
-        println!("end of network worker loop");
     }
 }
 

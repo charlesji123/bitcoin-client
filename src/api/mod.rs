@@ -145,7 +145,6 @@ impl Server {
                         "/blockchain/longest-chain-tx" => {
                             // get the transaction hashes of all the blocks in the longest chain
                             let longest_chain_tx = {blockchain.lock().unwrap().all_tx_in_longest_chain()};
-                            print!("longest chain tx length {}", longest_chain_tx.len());
                             let mut all_txs = Vec::new();
                             for n in 0..longest_chain_tx.len(){
                                 let block_tx = longest_chain_tx[n].clone();
@@ -183,7 +182,6 @@ impl Server {
                                     break;
                                 }
                                 index += 1;
-                                println!("block hash in block api: {}", hash);
                             }
                             let state = {blockchain.lock().unwrap().state_map.get(&block_hash).unwrap().clone()};
                             let mut all_addresses = Vec::new();

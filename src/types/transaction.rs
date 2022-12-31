@@ -22,7 +22,6 @@ pub fn sign(t: &Transaction, key: &Ed25519KeyPair) -> Signature {
     // searlized transaction 256 bytes
     let transac = bincode::serialize(t).unwrap(); // unwrap gives a vector
     let trans: &[u8]= transac.as_slice(); // convert to u8
-    // Sign the transaction
     key.sign(&trans) // sign the message
 }
 
